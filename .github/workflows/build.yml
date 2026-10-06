@@ -20,15 +20,15 @@ jobs:
     # The macOS 27 image: the same compiler and SDK the app is developed with.
     runs-on: xcode-27
     timeout-minutes: 30
-    env:
-      PIXIX_CACHE: ${{ runner.temp }}/pixix
     steps:
       - uses: actions/checkout@v7
 
-      - name: Show toolchain
+      - name: Set up
         run: |
           sw_vers
           swift --version
+          # Build output goes outside the checkout, as it does on a developer machine.
+          echo "PIXIX_CACHE=$RUNNER_TEMP/pixix" >> "$GITHUB_ENV"
 
       - name: Test
         run: swift test --scratch-path "$PIXIX_CACHE/build"
