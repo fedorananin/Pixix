@@ -30,6 +30,10 @@ extension ViewerWindowController {
 
     /// Scripted scenarios for snapshots.
     func runDemoScript(_ name: String) {
+        if name == "mouse" {
+            runMouseScript()
+            return
+        }
         guard let editor else { return }
         let document = editor.document
         let size = document.size
@@ -99,6 +103,61 @@ extension ViewerWindowController {
         document.setActiveLayer(caption.id)
         editor.model.tool = .move
         canvas.fit()
+    }
+
+    /// Turns a mouse wheel over the picture, over the background and sideways, presses the side buttons, and
+    /// prints what each of them did. The events go to the window, so they take the same route as the real ones.
+    private func runMouseScript() {
+        guard let window, let screen = NSScreen.screens.first else { return }
+        var clock: TimeInterval = 10
+        func state() -> String { "\(canvas.zoomPercent)% \(browser?.current?.lastPathComponent ?? "-")" }
+        // An event made from a Core Graphics one belongs to no window, and AppKit reads its place on the screen
+        // as the place in the window. Core Graphics counts rows from the top of the main display.
+        func location(_ viewPoint: CGPoint) -> CGPoint {
+            let inWindow = canvas.convert(viewPoint, to: nil)
+            return CGPoint(x: inWindow.x, y: screen.frame.height - inWindow.y)
+        }
+        func press(_ label: String, button: UInt32) {
+            guard let button = CGMouseButton(rawValue: button), let cgEvent = CGEvent(
+                mouseEventSource: nil, mouseType: .otherMouseDown, mouseCursorPosition: location(.zero), mouseButton: button
+            ), let event = NSEvent(cgEvent: cgEvent) else { return }
+            window.sendEvent(event)
+            print("\(label): \(state())")
+        }
+        func turn(_ label: String, at viewPoint: CGPoint, vertical: Int32 = 0, horizontal: Int32 = 0, notches: Int = 1, pause: TimeInterval = 0.3) {
+            var steps: [String] = []
+            for _ in 0..<notches {
+                guard let cgEvent = CGEvent(
+                    scrollWheelEvent2Source: nil, units: .line, wheelCount: 2, wheel1: vertical, wheel2: horizontal, wheel3: 0
+                ) else { return }
+                cgEvent.location = location(viewPoint)
+                clock += pause
+                cgEvent.timestamp = CGEventTimestamp(clock * 1_000_000_000)
+                guard let event = NSEvent(cgEvent: cgEvent) else { return }
+                window.sendEvent(event)
+                steps.append(state())
+            }
+            print("\(label): \(steps.joined(separator: ", "))")
+        }
+        let inside = CGPoint(x: canvas.imageRect.midX, y: canvas.imageRect.midY)
+        let outside = CGPoint(x: canvas.bounds.minX + 4, y: canvas.bounds.minY + 4)
+        let edge = CGPoint(x: canvas.imageRect.minX + 6, y: canvas.imageRect.midY)
+        let arrow = CGPoint(x: canvas.bounds.maxX - 38, y: canvas.bounds.midY)
+        print("start: \(state()), \(browser?.count ?? 0) files")
+        turn("up over the picture", at: inside, vertical: 3, notches: 12)
+        turn("down over the picture", at: inside, vertical: -3, notches: 16)
+        canvas.fit()
+        // The picture shrinks away from the pointer here, and the wheel must go on zooming.
+        turn("down at the edge of the picture", at: edge, vertical: -1, notches: 3)
+        canvas.fit()
+        turn("down over the background", at: outside, vertical: -1, notches: 2)
+        turn("up over the background", at: outside, vertical: 1)
+        turn("sideways over the picture", at: inside, horizontal: -1, notches: 2)
+        turn("sideways the other way, too fast", at: inside, horizontal: 1, notches: 4, pause: 0.03)
+        turn("up over the next arrow", at: arrow, vertical: 1)
+        press("first side button", button: 3)
+        press("second side button", button: 4)
+        turn("up over the picture", at: inside, vertical: 1, notches: 3, pause: 2)
     }
 
     /// Drives the tools through the same entry points the canvas uses for real mouse input.

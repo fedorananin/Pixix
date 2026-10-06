@@ -48,9 +48,9 @@ choose **File › Get Info**, pick the app under **Open With** and press **Chang
 
 | Action | How |
 |---|---|
-| Next, previous image | `←` `→`, the on-screen arrows, a two-finger horizontal swipe |
+| Next, previous image | `←` `→`, the on-screen arrows, a two-finger horizontal swipe, the side buttons of a mouse, the mouse wheel anywhere off the picture, a sideways wheel |
 | First, last image | `Home`, `End` |
-| Zoom | Pinch, the mouse wheel, `+` `−`, `⌘+` `⌘−` |
+| Zoom | Pinch, the mouse wheel over the picture, `+` `−`, `⌘+` `⌘−` |
 | Fit, actual size | Double click, `0` / `1`, `⌘0` / `⌘1` |
 | Pan a zoomed image | Drag, or two fingers |
 | Full screen | `F` |

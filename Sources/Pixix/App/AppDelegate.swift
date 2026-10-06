@@ -224,6 +224,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
                 return
             }
+            if !launchOptions.startsEditing { launchOptions.script?(controller) }
             controller.writeSnapshot(to: url)
             NSApp.terminate(nil)
         }
@@ -240,7 +241,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 ///     Pixix --close photo.jpg              close the window once the picture is up; the app must exit by itself
 ///     Pixix --snapshot out.png photo.jpg   save a picture of the window and exit
 ///     Pixix --snapshot out.png --edit --demo meme photo.jpg   the same, in the editor, after a scripted scenario
-///                                          (meme, crop, select, effect, export)
+///                                          (meme, tools, crop, crop-applied, select, effect, export)
+///     Pixix --snapshot out.png --demo mouse photo.jpg         the viewer after a scripted run of the wheel and side buttons
 @MainActor
 final class LaunchOptions {
     var files: [URL] = []

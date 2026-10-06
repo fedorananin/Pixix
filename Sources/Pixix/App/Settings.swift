@@ -38,7 +38,7 @@ final class Settings {
         set { defaults.set(newValue, forKey: "sortDescending") }
     }
 
-    /// An ordinary mouse wheel zooms instead of scrolling.
+    /// An ordinary mouse wheel zooms while it is over the picture, instead of scrolling.
     var wheelZooms: Bool {
         get { defaults.object(forKey: "wheelZooms") as? Bool ?? true }
         set { defaults.set(newValue, forKey: "wheelZooms") }

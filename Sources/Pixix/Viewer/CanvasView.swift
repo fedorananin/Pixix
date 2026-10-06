@@ -62,6 +62,8 @@ final class CanvasView: NSView {
     private enum ScrollGesture { case undecided, pan, navigate, done }
     private var scrollGesture = ScrollGesture.undecided
     private var swipeDistance: CGFloat = 0
+    private var lastSidewaysWheel: TimeInterval = 0
+    private var wheelLatch: (overImage: Bool, location: CGPoint, time: TimeInterval)?
     private var isPanningWithMouse = false
     private var isSpaceDown = false
     private var lastDragLocation: CGPoint = .zero
@@ -276,6 +278,26 @@ final class CanvasView: NSView {
         if let target { setScale(target / backingScale, anchor: CGPoint(x: bounds.midX, y: bounds.midY)) }
     }
 
+    /// One notch of a mouse wheel. The levels are evenly spaced inside each doubling: 50, 60 … 100, 120 … 200.
+    /// The step does not depend on how fast the wheel turns, so the same notches always land on the same zoom.
+    func zoomNotch(_ direction: Int, anchor: CGPoint) {
+        guard contentSize.width > 0 else { return }
+        let current = scale * backingScale
+        // Nudged so that a level reached a moment ago is not chosen again because of rounding.
+        let nudged = current * (direction > 0 ? 1.01 : 0.99)
+        let base = pow(2, floor(log2(nudged)))
+        let step = base / 5
+        let index = (nudged - base) / step
+        let target = base + step * (direction > 0 ? floor(index) + 1 : ceil(index) - 1)
+        // Fit is a stop on the way through, otherwise the wheel could never come back to it.
+        let fitted = fitScale * backingScale
+        if abs(current - fitted) > fitted * 0.01, (current - fitted) * (target - fitted) < 0 {
+            fit()
+        } else {
+            setScale(target / backingScale, anchor: anchor)
+        }
+    }
+
     func toggleFitAndActualSize(anchor: CGPoint) {
         if isFitted {
             // When the fitted image is already at 100%, there is nothing to toggle to except a closer look.
@@ -322,23 +344,13 @@ final class CanvasView: NSView {
 
     override func scrollWheel(with event: NSEvent) {
         let location = convert(event.locationInWindow, from: nil)
-        let precise = event.hasPreciseScrollingDeltas
-        let wantsZoom = event.modifierFlags.contains(.command) || (!precise && Settings.shared.wheelZooms)
-
-        if wantsZoom {
-            let delta = event.scrollingDeltaY
-            guard delta != 0 else { return }
-            let factor = precise ? exp(delta * 0.01) : pow(1.2, min(max(delta, -3), 3))
-            zoom(by: factor, anchor: location)
+        guard event.hasPreciseScrollingDeltas else {
+            mouseWheel(with: event, overImage: wheelIsOverImage(event, at: location))
             return
         }
-        if !precise {
-            // A wheel that is not zooming pages through the folder, one image per notch.
-            if allowsNavigation, isFitted, event.scrollingDeltaY != 0 {
-                delegate?.canvas(self, navigateBy: event.scrollingDeltaY < 0 ? 1 : -1)
-            } else {
-                pan(by: CGPoint(x: event.scrollingDeltaX * 10, y: event.scrollingDeltaY * 10))
-            }
+        if event.modifierFlags.contains(.command) {
+            guard event.scrollingDeltaY != 0 else { return }
+            zoom(by: exp(event.scrollingDeltaY * 0.01), anchor: location)
             return
         }
 
@@ -365,6 +377,45 @@ final class CanvasView: NSView {
             }
         case .undecided, .done:
             break
+        }
+    }
+
+    /// Zooming out and turning the page both change what is under the pointer. While the wheel keeps turning in
+    /// one spot it goes on doing what it started with, instead of switching between zooming and paging halfway.
+    private func wheelIsOverImage(_ event: NSEvent, at location: CGPoint) -> Bool {
+        var overImage = imageRect.intersection(bounds).contains(location)
+        if let latch = wheelLatch, event.timestamp - latch.time < 1,
+           hypot(location.x - latch.location.x, location.y - latch.location.y) < 4 {
+            overImage = latch.overImage
+        }
+        wheelLatch = (overImage, location, event.timestamp)
+        return overImage
+    }
+
+    /// A notched mouse wheel. Over the picture it zooms, anywhere else it pages through the folder, and a
+    /// sideways wheel always pages. `overImage` is false for the background and for the controls laid over the canvas.
+    func mouseWheel(with event: NSEvent, overImage: Bool) {
+        let dx = event.scrollingDeltaX, dy = event.scrollingDeltaY
+        if abs(dx) > abs(dy) {
+            guard allowsNavigation else {
+                pan(by: CGPoint(x: dx * 10, y: 0))
+                return
+            }
+            // A tilt wheel repeats while it is held and a thumb wheel has no notches; neither should race through the folder.
+            guard event.timestamp - lastSidewaysWheel > 0.1 else { return }
+            lastSidewaysWheel = event.timestamp
+            delegate?.canvas(self, navigateBy: dx < 0 ? 1 : -1)
+            return
+        }
+        guard dy != 0 else { return }
+        let zooms = event.modifierFlags.contains(.command)
+            || (Settings.shared.wheelZooms && (overImage || !allowsNavigation))
+        if zooms {
+            zoomNotch(dy > 0 ? 1 : -1, anchor: convert(event.locationInWindow, from: nil))
+        } else if allowsNavigation, !overImage || isFitted {
+            delegate?.canvas(self, navigateBy: dy < 0 ? 1 : -1)
+        } else {
+            pan(by: CGPoint(x: 0, y: dy * 10))
         }
     }
 

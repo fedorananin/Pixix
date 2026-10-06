@@ -96,14 +96,16 @@ Scripts/          build-app.sh, run.sh, make-icon.swift
 
 | Action | How |
 |---|---|
-| Next and previous | `←` `→`, on-screen arrows, two-finger horizontal swipe |
+| Next and previous | `←` `→`, on-screen arrows, two-finger horizontal swipe, mouse side buttons, mouse wheel off the picture, sideways wheel |
 | First and last | `Home`, `End` |
-| Zoom | Pinch, `⌘+`, `⌘−`, mouse wheel |
+| Zoom | Pinch, `⌘+`, `⌘−`, mouse wheel over the picture |
 | Fit and 100% | Double click or double tap, `⌘0`, `⌘1` |
 | Pan a zoomed image | Drag, two fingers |
 | Full screen | `F`, `⌃⌘F` |
 
-The swipe versus pan conflict is resolved like this: while the whole image fits in the window, a horizontal swipe browses. When it is zoomed in, two fingers pan it, and browsing fires only on a new gesture that starts at the edge. An ordinary mouse wheel is told apart from a trackpad by `hasPreciseScrollingDeltas`: the wheel zooms, as in Windows, and the trackpad pans and browses.
+The swipe versus pan conflict is resolved like this: while the whole image fits in the window, a horizontal swipe browses. When it is zoomed in, two fingers pan it, and browsing fires only on a new gesture that starts at the edge. An ordinary mouse wheel is told apart from a trackpad by `hasPreciseScrollingDeltas`: the trackpad pans and browses, and the wheel zooms while the pointer is over the picture and browses everywhere else — over the background, the arrows and the thumbnail strip. A sideways wheel always browses. While the wheel keeps turning in one spot it keeps doing what it started with, because zooming out and turning the page both change what is under the pointer.
+
+One notch of the wheel is one fixed step, whatever the speed of the wheel: the levels are evenly spaced inside each doubling (50, 60 … 100, 120 … 200), and the fitted size is a stop on the way through. The first side button of a mouse goes to the next image and the second to the previous one, anywhere in the window.
 
 **Browsing speed.** Decoding happens off the main thread and is cancelled when flipping quickly. Neighbors within ±2 files are preloaded. The cache has a memory limit.
 
@@ -245,7 +247,7 @@ Phases 0–2 remove the main pain. Phases 3–4 solve the meme task. Phase 5 is 
 ## 11. Decisions
 
 1. Bundle identifier: `me.fedorananin.pixix`.
-2. An ordinary mouse wheel zooms rather than browses.
+2. An ordinary mouse wheel zooms over the picture and browses everywhere else.
 3. `⌘S` overwrites the original; `⌘⇧S` saves a copy.
 4. The interface is English only. `README` and `AGENTS.md` are English only.
 5. The project and its git repository stay in OneDrive. Build caches, intermediates and the built app live under `~/Library/Caches/Pixix`.

@@ -73,7 +73,7 @@ $APP --snapshot out.png photo.jpg                        # picture of the viewer
 $APP --snapshot out.png --edit --demo tools photo.jpg    # picture of the editor after a scripted scenario
 ```
 
-Scenarios (`Sources/Pixix/App/Diagnostics.swift`): `meme`, `tools`, `crop`, `crop-applied`, `select`, `effect`, `export`. `tools` drives every tool through the same entry points real mouse input uses. Add a scenario when adding a tool or dialog, then look at the PNG. With a sheet open, the sheet is what gets captured.
+Scenarios (`Sources/Pixix/App/Diagnostics.swift`): `meme`, `tools`, `crop`, `crop-applied`, `select`, `effect`, `export`. `tools` drives every tool through the same entry points real mouse input uses. One more, `mouse`, runs in the viewer, without `--edit`: it sends wheel and side-button events to the window and prints the zoom and the file after each one. Add a scenario when adding a tool or dialog, then look at the PNG. With a sheet open, the sheet is what gets captured.
 
 Engine tests can also dump renders for inspection: set `PIXIX_TEST_OUTPUT` to a folder.
 

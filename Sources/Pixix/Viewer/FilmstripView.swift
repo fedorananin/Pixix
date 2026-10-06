@@ -9,7 +9,7 @@ final class FilmstripView: NSView, NSCollectionViewDataSource, NSCollectionViewD
     private var files: [URL] = []
     private var isSyncingSelection = false
     private let collection = NSCollectionView()
-    private let scroll = NSScrollView()
+    private let scroll = FilmstripScrollView()
 
     init() {
         super.init(frame: .zero)
@@ -72,6 +72,17 @@ final class FilmstripView: NSView, NSCollectionViewDataSource, NSCollectionViewD
     func collectionView(_ collectionView: NSCollectionView, didSelectItemsAt indexPaths: Set<IndexPath>) {
         guard !isSyncingSelection, let path = indexPaths.first else { return }
         onSelect?(path.item)
+    }
+}
+
+/// A trackpad scrolls the strip. A mouse wheel is passed on, and the window pages through the folder with it.
+private final class FilmstripScrollView: NSScrollView {
+    override func scrollWheel(with event: NSEvent) {
+        if event.hasPreciseScrollingDeltas {
+            super.scrollWheel(with: event)
+        } else {
+            nextResponder?.scrollWheel(with: event)
+        }
     }
 }
 

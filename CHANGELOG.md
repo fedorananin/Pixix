@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.1
+
+- The side buttons of a mouse browse the folder: the first goes to the next image, the second to the previous one.
+- The mouse wheel zooms while the pointer is over the picture and browses everywhere else: over the
+  background, the arrows and the thumbnail strip. A sideways wheel always browses.
+- Wheel zoom is much gentler. One notch is one fixed step whatever the speed of the wheel
+  (50 → 60 → 70 … 100 → 120 instead of 50 → 86 → 149), and zooming out stops at the fitted size on the way.
+
 ## 0.1.0
 
 The first release.

@@ -354,6 +354,31 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate, Canvas
         if !browser.move(by: delta, wrap: Settings.shared.wrapAround) { NSSound.beep() }
     }
 
+    /// The side buttons of a mouse, wherever in the window the pointer is: the first one goes forward, the second back.
+    override func otherMouseDown(with event: NSEvent) {
+        switch event.buttonNumber {
+        case 3 where !isEditing: navigate(by: 1)
+        case 4 where !isEditing: navigate(by: -1)
+        default: super.otherMouseDown(with: event)
+        }
+    }
+
+    /// Wheel events nobody took: from the arrows and the other controls laid over the canvas, and from the filmstrip.
+    override func scrollWheel(with event: NSEvent) {
+        guard !isEditing, !event.hasPreciseScrollingDeltas, let window,
+              window.contentLayoutRect.contains(event.locationInWindow) else {
+            super.scrollWheel(with: event)
+            return
+        }
+        let target = window.contentView?.hitTest(event.locationInWindow)
+        if target?.isDescendant(of: zoomBar) == true {
+            // The zoom pill is not a place to turn pages from; behave as if the pointer were on what is under it.
+            canvas.scrollWheel(with: event)
+        } else {
+            canvas.mouseWheel(with: event, overImage: false)
+        }
+    }
+
     @objc func nextImage(_ sender: Any?) { navigate(by: 1) }
     @objc func previousImage(_ sender: Any?) { navigate(by: -1) }
     @objc func firstImage(_ sender: Any?) { if !isEditing { browser?.go(to: 0) } }
