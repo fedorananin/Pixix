@@ -1,0 +1,101 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Test and build
+    # The macOS 27 image: the same compiler and SDK the app is developed with.
+    runs-on: xcode-27
+    timeout-minutes: 30
+    env:
+      PIXIX_CACHE: ${{ runner.temp }}/pixix
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Show toolchain
+        run: |
+          sw_vers
+          swift --version
+
+      - name: Test
+        run: swift test --scratch-path "$PIXIX_CACHE/build"
+
+      - name: Build and pack the app
+        # No certificate here, so the app gets an ad hoc signature.
+        run: PIXIX_SIGN_IDENTITY=- Scripts/build-app.sh --zip
+
+      - name: Check that the app starts
+        timeout-minutes: 3
+        run: |
+          app="$PIXIX_CACHE/dist/Pixix.app"
+          codesign --verify --strict --verbose=2 "$app"
+          "$app/Contents/MacOS/Pixix" --version
+          # A real launch: open a picture, wait for the first frame, quit.
+          swift Scripts/make-sample.swift "$RUNNER_TEMP/sample.jpg"
+          "$app/Contents/MacOS/Pixix" --timing --quit "$RUNNER_TEMP/sample.jpg"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Pixix
+          path: ${{ runner.temp }}/pixix/dist/Pixix.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: Pixix
+
+      - name: Check that the tag matches the app version
+        run: |
+          version=$(grep -A1 CFBundleShortVersionString Resources/Info.plist | sed -n 's:.*<string>\(.*\)</string>.*:\1:p')
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match version $version in Resources/Info.plist" >&2
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Collect release notes
+        run: |
+          # The section of CHANGELOG.md for this version, without its heading.
+          awk -v version="$VERSION" '
+            /^## / { printing = ($2 == version); next }
+            printing { print }
+          ' CHANGELOG.md > notes.md
+          cat >> notes.md <<'NOTES'
+
+          ### Install
+
+          Download `Pixix.zip`, unpack it, move `Pixix.app` to Applications and run this once in Terminal:
+
+          ```sh
+          xattr -dr com.apple.quarantine /Applications/Pixix.app
+          ```
+          NOTES
+          cat notes.md
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" Pixix.zip --title "Pixix $VERSION" --notes-file notes.md --verify-tag

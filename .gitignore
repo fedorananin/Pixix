@@ -1,0 +1,6 @@
+# Build output lives outside the project (see AGENTS.md); these are safety nets.
+.build/
+.swiftpm/
+*.xcodeproj
+DerivedData/
+.DS_Store

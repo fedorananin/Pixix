@@ -1,0 +1,102 @@
+import Foundation
+import PixixCodec
+
+enum SortOrder: String, CaseIterable, Identifiable {
+    case name, dateModified, dateCreated, size
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .name: "Name"
+        case .dateModified: "Date Modified"
+        case .dateCreated: "Date Created"
+        case .size: "Size"
+        }
+    }
+}
+
+struct ExportPreset: Codable, Identifiable, Hashable {
+    var id = UUID()
+    var name: String
+    var settings: ExportSettings
+}
+
+/// User preferences, stored in the app's defaults.
+@MainActor
+final class Settings {
+    static let shared = Settings()
+    private let defaults = UserDefaults.standard
+
+    var sortOrder: SortOrder {
+        get { SortOrder(rawValue: defaults.string(forKey: "sortOrder") ?? "") ?? .name }
+        set { defaults.set(newValue.rawValue, forKey: "sortOrder") }
+    }
+
+    var sortDescending: Bool {
+        get { defaults.bool(forKey: "sortDescending") }
+        set { defaults.set(newValue, forKey: "sortDescending") }
+    }
+
+    /// An ordinary mouse wheel zooms instead of scrolling.
+    var wheelZooms: Bool {
+        get { defaults.object(forKey: "wheelZooms") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "wheelZooms") }
+    }
+
+    /// Going past the last image continues from the first.
+    var wrapAround: Bool {
+        get { defaults.object(forKey: "wrapAround") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "wrapAround") }
+    }
+
+    var showsFilmstrip: Bool {
+        get { defaults.bool(forKey: "showsFilmstrip") }
+        set { defaults.set(newValue, forKey: "showsFilmstrip") }
+    }
+
+    var slideshowInterval: Double {
+        get { defaults.object(forKey: "slideshowInterval") as? Double ?? 4 }
+        set { defaults.set(newValue, forKey: "slideshowInterval") }
+    }
+
+    /// The settings of the most recent export, replayed by Export Again.
+    var lastExport: ExportSettings? {
+        get { decode("lastExport") }
+        set { encode(newValue, "lastExport") }
+    }
+
+    var exportPresets: [ExportPreset] {
+        get {
+            decode("exportPresets") ?? Self.defaultPresets
+        }
+        set { encode(newValue, "exportPresets") }
+    }
+
+    private static var defaultPresets: [ExportPreset] {
+        func make(_ name: String, _ configure: (inout ExportSettings) -> Void) -> ExportPreset {
+            var settings = ExportSettings()
+            configure(&settings)
+            return ExportPreset(name: name, settings: settings)
+        }
+        return [
+            make("JPEG · 1920 px") { $0.format = .jpeg; $0.quality = 0.82; $0.resize = .longEdge(1920) },
+            make("JPEG · 1280 px · small") { $0.format = .jpeg; $0.quality = 0.7; $0.resize = .longEdge(1280) },
+            make("WebP · 1920 px") { $0.format = .webp; $0.quality = 0.8; $0.resize = .longEdge(1920) },
+            make("PNG · original size") { $0.format = .png },
+        ]
+    }
+
+    private func decode<T: Decodable>(_ key: String) -> T? {
+        guard let data = defaults.data(forKey: key) else { return nil }
+        return try? JSONDecoder().decode(T.self, from: data)
+    }
+
+    private func encode<T: Encodable>(_ value: T?, _ key: String) {
+        guard let value, let data = try? JSONEncoder().encode(value) else {
+            defaults.removeObject(forKey: key)
+            return
+        }
+        defaults.set(data, forKey: key)
+    }
+}
