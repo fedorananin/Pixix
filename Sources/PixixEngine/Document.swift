@@ -54,12 +54,15 @@ public final class Document {
         self.renderer = renderer
     }
 
-    /// A document with the image as its only layer.
-    public convenience init?(image: CGImage, layerName: String = "Background", renderer: Renderer = Renderer()) {
+    /// A document with the image as its only layer. A locked layer stays put under whatever is drawn over it.
+    public convenience init?(
+        image: CGImage, layerName: String = "Background", isLocked: Bool = false, renderer: Renderer = Renderer()
+    ) {
         let space = Resampler.renderableColorSpace(for: image)
         guard let buffer = PixelBuffer(image: image, colorSpace: space) else { return nil }
         self.init(size: buffer.size, colorSpace: space, renderer: renderer)
-        let layer = Layer(name: layerName, content: .raster(buffer))
+        var layer = Layer(name: layerName, content: .raster(buffer))
+        layer.isLocked = isLocked
         state.layers = [layer]
         state.activeLayerID = layer.id
     }

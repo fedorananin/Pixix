@@ -159,28 +159,12 @@ final class CropTool: EditorTool {
 
     /// Shrinks the frame around its center until it has the chosen proportions.
     private func applyRatio() {
-        guard let ratio, rect.width > 0, rect.height > 0 else { return }
-        var size = rect.size
-        if size.width / size.height > ratio {
-            size.width = size.height * ratio
-        } else {
-            size.height = size.width / ratio
-        }
-        rect = CGRect(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2, width: size.width, height: size.height)
-    }
-
-    /// 0...3 corners clockwise from top-left, 4...7 edges from the top.
-    private func handlePoints(_ rect: CGRect) -> [CGPoint] {
-        [
-            CGPoint(x: rect.minX, y: rect.minY), CGPoint(x: rect.maxX, y: rect.minY),
-            CGPoint(x: rect.maxX, y: rect.maxY), CGPoint(x: rect.minX, y: rect.maxY),
-            CGPoint(x: rect.midX, y: rect.minY), CGPoint(x: rect.maxX, y: rect.midY),
-            CGPoint(x: rect.midX, y: rect.maxY), CGPoint(x: rect.minX, y: rect.midY),
-        ]
+        guard let ratio else { return }
+        rect = FrameGeometry.fitted(rect, ratio: ratio)
     }
 
     private func handle(at point: CGPoint) -> Int? {
-        let points = handlePoints(rect)
+        let points = FrameGeometry.handlePoints(rect)
         guard let nearest = points.indices.min(by: { points[$0].distance(to: point) < points[$1].distance(to: point) }),
               points[nearest].distance(to: point) <= reach
         else { return nil }
@@ -210,14 +194,14 @@ final class CropTool: EditorTool {
             if snap { moved = snappedOrigin(moved) }
             rect = moved
         case .new(let start):
-            rect = constrained(anchor: start, to: snap ? snappedPoint(point) : point, freeX: true, freeY: true)
+            rect = FrameGeometry.frame(anchor: start, to: snap ? snappedPoint(point) : point, ratio: ratio)
         case .handle(let index, let original):
             let target = snap ? snappedPoint(point) : point
             if index < 4 {
-                let anchor = handlePoints(original)[(index + 2) % 4]
-                rect = constrained(anchor: anchor, to: target, freeX: true, freeY: true)
+                let anchor = FrameGeometry.handlePoints(original)[(index + 2) % 4]
+                rect = FrameGeometry.frame(anchor: anchor, to: target, ratio: ratio)
             } else {
-                rect = edgeDragged(index - 4, original: original, to: target)
+                rect = FrameGeometry.frame(original, draggingEdge: index - 4, to: target, ratio: ratio)
             }
         }
         updatePreview()
@@ -251,46 +235,6 @@ final class CropTool: EditorTool {
         if abs(rect.maxX - document.size.width) <= limit { result.origin.x = document.size.width - rect.width }
         if abs(rect.minY) <= limit { result.origin.y = 0 }
         if abs(rect.maxY - document.size.height) <= limit { result.origin.y = document.size.height - rect.height }
-        return result
-    }
-
-    /// A frame from a fixed corner to the pointer, forced into the chosen proportions.
-    private func constrained(anchor: CGPoint, to point: CGPoint, freeX: Bool, freeY: Bool) -> CGRect {
-        var width = abs(point.x - anchor.x), height = abs(point.y - anchor.y)
-        if let ratio {
-            if width / max(height, 0.0001) > ratio { height = width / ratio } else { width = height * ratio }
-        }
-        return CGRect(
-            x: point.x < anchor.x ? anchor.x - width : anchor.x, y: point.y < anchor.y ? anchor.y - height : anchor.y,
-            width: width, height: height
-        )
-    }
-
-    private func edgeDragged(_ edge: Int, original: CGRect, to point: CGPoint) -> CGRect {
-        var result = original
-        switch edge {
-        case 0:
-            result.origin.y = min(point.y, original.maxY - 1)
-            result.size.height = original.maxY - result.minY
-        case 1:
-            result.size.width = max(point.x - original.minX, 1)
-        case 2:
-            result.size.height = max(point.y - original.minY, 1)
-        default:
-            result.origin.x = min(point.x, original.maxX - 1)
-            result.size.width = original.maxX - result.minX
-        }
-        guard let ratio else { return result }
-        // Keep the proportions by growing the other dimension evenly on both sides.
-        if edge % 2 == 0 {
-            let width = result.height * ratio
-            result.origin.x = original.midX - width / 2
-            result.size.width = width
-        } else {
-            let height = result.width / ratio
-            result.origin.y = original.midY - height / 2
-            result.size.height = height
-        }
         return result
     }
 
@@ -360,7 +304,7 @@ final class CropTool: EditorTool {
         context.setFillColor(.white)
         context.setStrokeColor(NSColor.black.withAlphaComponent(0.5).cgColor)
         context.setLineWidth(1)
-        for point in handlePoints(frame) {
+        for point in FrameGeometry.handlePoints(frame) {
             let box = CGRect(x: point.x - 5, y: point.y - 5, width: 10, height: 10)
             context.fill(box)
             context.stroke(box)
@@ -1017,7 +961,8 @@ final class RegionTool: EditorTool {
             region.amount = 60
         } else {
             // Scale the default strength with the picture, so a 12 MP photo is not left readable.
-            region.amount = max(model.regionAmount, (max(document.size.width, document.size.height) / 110).rounded())
+            region.amount = model.fixedRegionAmount
+                ?? max(model.regionAmount, (max(document.size.width, document.size.height) / 110).rounded())
         }
         var layer = Layer(name: effect.title, content: .effect(region))
         layer.transform = CGAffineTransform(translationX: rect.minX, y: rect.minY)

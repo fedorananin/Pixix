@@ -45,6 +45,10 @@ final class CanvasView: NSView {
     var showsCheckerboard = false {
         didSet { checkerLayer.isHidden = !showsCheckerboard }
     }
+    /// The screenshot overlay shows the screen pixel for pixel: nothing may zoom or pan it.
+    var locksView = false
+    /// Lets a click on a window that is not key reach the tool, instead of only waking the window.
+    var acceptsFirstClick = false
 
     private(set) var contentSize: CGSize = .zero
     /// View points per image pixel.
@@ -175,6 +179,8 @@ final class CanvasView: NSView {
             width: max(bounds.width - fitPadding * 2, 10), height: max(bounds.height - fitPadding * 2, 10)
         )
         let fit = min(available.width / contentSize.width, available.height / contentSize.height)
+        // A frozen screen fills its display whatever resolution the picture of it came in.
+        if locksView { return fit }
         // Small images are shown at their real size rather than blown up.
         return min(fit, actualSizeScale)
     }
@@ -313,7 +319,7 @@ final class CanvasView: NSView {
     }
 
     private func setScale(_ newScale: CGFloat, anchor: CGPoint) {
-        guard contentSize.width > 0 else { return }
+        guard contentSize.width > 0, !locksView else { return }
         let minimum = min(fitScale, actualSizeScale) * 0.5
         let maximum = 64 / backingScale
         let clamped = min(max(newScale, minimum), maximum)
@@ -329,7 +335,7 @@ final class CanvasView: NSView {
     }
 
     private func pan(by delta: CGPoint) {
-        guard !isFitted || panSlack > 0 else { return }
+        guard !locksView, !isFitted || panSlack > 0 else { return }
         isFitted = false
         focus.x -= delta.x / scale
         focus.y -= delta.y / scale
@@ -453,6 +459,8 @@ final class CanvasView: NSView {
     private func usesTool(_ event: NSEvent) -> Bool {
         toolHandler != nil && !isSpaceDown
     }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { acceptsFirstClick }
 
     override func menu(for event: NSEvent) -> NSMenu? {
         delegate?.canvas(self, menuAt: imagePoint(fromView: convert(event.locationInWindow, from: nil)))

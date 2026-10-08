@@ -2,7 +2,7 @@
 
 A fast image viewer and layered editor for macOS. It opens instantly, leaves the Dock when its window closes,
 flips through a folder like Windows 11 Photos, converts and resizes in one dialog, and edits with layers like
-Paint.NET.
+Paint.NET. It can also take screenshots: select a part of the screen, mark it up on the spot, copy or save.
 
 ![Pixix showing a picture](docs/screenshots/viewer.jpg)
 
@@ -109,6 +109,40 @@ adjustment sliders, the layer list and the history.
 
 Hold `Space` to pan. `X` swaps the two colors. `[` and `]` change the brush size.
 
+## Screenshots
+
+Off by default. Turn on **Settings › Screenshots › Take screenshots with Pixix**, and allow Pixix under
+Privacy & Security › Screen & System Audio Recording when macOS asks. Pixix then keeps an icon in the menu bar
+and stays there after its windows are closed, without a Dock icon, so the shortcut works at any time.
+
+To change the shortcut, click it in Settings and press the new one: a key with `⌘`, `⌥` or `⌃`, or a function
+key. `Esc` keeps the old one and `Delete` removes it.
+
+Press the shortcut (`⇧⌘2` unless you chose another) and the screen freezes:
+
+| To | Do this |
+|---|---|
+| Select an area | Drag. The size in pixels is shown at its corner |
+| Take a window, or the whole display | Click the window; click the desktop or press `⌘A` |
+| Adjust the selection | Drag its corners and edges; arrow keys move it by a pixel, ten with `⇧` |
+| Hold it to proportions, or give it an exact size | The `≡` menu in the size label; or type over the numbers |
+| See what a button does | Hold the pointer over it |
+| Mark it up | The panel beside it: arrow, line, pen, highlighter, rectangle, ellipse, pixelate, blur, text, numbered badges, color and line width. A button with a corner holds more tools: click it again |
+| Move what you drew, or the selection itself | The pointer tool (`V`): drag the markup, or drag bare screen |
+| Copy | `⌘C` or `Return` |
+| Save | `⌘S` saves to the folder chosen in Settings (`~/Pictures/Screenshots`); `⇧⌘S` asks where |
+| Copy the text in the selection | `⇧⌘C` |
+| Continue in the full editor | `⌘E`. The markup arrives as layers, still editable |
+| Back out | `Esc` or a right click |
+
+The proportions, the tool, the color and the line width are remembered for the next screenshot. **Start Pixix
+at login** in Settings keeps the shortcut working after a restart. `⌘Q` quits Pixix entirely, shortcut
+included. macOS keeps its own `⇧⌘3`, `⇧⌘4` and `⇧⌘5` and acts on them before any app can; to give one of them
+to Pixix, switch it off in System Settings › Keyboard › Keyboard Shortcuts › Screenshots. Settings says so when
+the shortcut you chose is one macOS still uses.
+
+Releases are signed ad hoc, so macOS may ask for the Screen Recording permission again after an update.
+
 ## Building from source
 
 You need macOS 26 or later with Xcode 27 or its Command Line Tools (Swift 6.4). Xcode itself is optional.
@@ -139,7 +173,7 @@ publishes a release with `Pixix.zip` attached.
 Sources/CWebP/        vendored libwebp 1.6.0, used only to write WebP
 Sources/PixixCodec/   reading, writing, metadata, export
 Sources/PixixEngine/  document, layers, selection, history, rendering, painting
-Sources/Pixix/        the app: viewer, editor, export dialog
+Sources/Pixix/        the app: viewer, editor, export dialog, screenshots
 Tests/                Swift Testing suites for the codec and the engine
 Resources/            Info.plist and the icon
 Scripts/              build-app.sh, run.sh, make-icon.swift, make-sample.swift
@@ -160,6 +194,9 @@ $APP --timing --quit photo.jpg                          # milliseconds to the fi
 PIXIX_TRACE=1 $APP --timing --quit photo.jpg            # the same, with launch checkpoints
 $APP --snapshot out.png photo.jpg                       # a picture of the viewer window
 $APP --snapshot out.png --edit --demo meme photo.jpg    # a picture of the editor after a scripted scenario
+$APP --snapshot out.png --demo capture photo.jpg        # the screenshot overlay, with the picture standing in for the screen
+$APP --background                                       # with screenshots switched on: start in the menu bar, with no window
+$APP --snapshot out.png --memory photo.jpg              # also print how much memory the app holds by then
 ```
 
 The timing and snapshot runs are unattended: the window is kept off the screen, the app does not come to

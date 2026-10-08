@@ -228,6 +228,8 @@ final class EditorModel {
     var fillsShapes = false
     var cornerRadius = 0.0
     var regionAmount = 18.0
+    /// Strength of the next blur or pixelate area in pixels. Nil picks one that suits the size of the picture.
+    var fixedRegionAmount: Double?
     /// Diameter of the next badge in pixels. Nil picks a size that suits the picture.
     var badgeSize: Double?
 

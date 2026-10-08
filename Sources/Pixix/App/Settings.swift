@@ -84,6 +84,66 @@ final class Settings {
         set { defaults.set(newValue, forKey: "slideshowInterval") }
     }
 
+    // MARK: Screenshots
+
+    /// Pixix takes screenshots: it claims a global shortcut and stays in the menu bar when its windows are closed.
+    var capturesScreenshots: Bool {
+        get { defaults.bool(forKey: "capturesScreenshots") }
+        set { defaults.set(newValue, forKey: "capturesScreenshots") }
+    }
+
+    /// The shortcut that starts a screenshot. Nil when the user cleared it and uses the menu bar icon alone.
+    var captureHotKey: KeyCombo? {
+        get { decode("captureHotKey") ?? (defaults.bool(forKey: "captureHotKeyCleared") ? nil : .standard) }
+        set {
+            encode(newValue, "captureHotKey")
+            defaults.set(newValue == nil, forKey: "captureHotKeyCleared")
+        }
+    }
+
+    /// Where Save puts screenshots.
+    var captureFolder: URL {
+        get {
+            defaults.string(forKey: "captureFolder").map { URL(fileURLWithPath: $0, isDirectory: true) }
+                ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Pictures/Screenshots", isDirectory: true)
+        }
+        set { defaults.set(newValue.path(percentEncoded: false), forKey: "captureFolder") }
+    }
+
+    var captureFormat: ImageFormat {
+        get { ImageFormat(rawValue: defaults.string(forKey: "captureFormat") ?? "") ?? .png }
+        set { defaults.set(newValue.rawValue, forKey: "captureFormat") }
+    }
+
+    /// The proportions the selection is held to, as "16:9". Nil leaves it free.
+    var captureAspect: String? {
+        get { defaults.string(forKey: "captureAspect") }
+        set { defaults.set(newValue, forKey: "captureAspect") }
+    }
+
+    /// The markup tool, color and line width used last, so the next screenshot starts with them.
+    var captureTool: String? {
+        get { defaults.string(forKey: "captureTool") }
+        set { defaults.set(newValue, forKey: "captureTool") }
+    }
+
+    var captureColor: RGBAColor? {
+        get { decode("captureColor") }
+        set { encode(newValue, "captureColor") }
+    }
+
+    /// In points, so it looks the same on a Retina display and an ordinary one.
+    var captureLineWidth: Double {
+        get { defaults.object(forKey: "captureLineWidth") as? Double ?? 3 }
+        set { defaults.set(newValue, forKey: "captureLineWidth") }
+    }
+
+    /// macOS asks for the Screen Recording permission once; after that the app has to explain it itself.
+    var didAskForScreenAccess: Bool {
+        get { defaults.bool(forKey: "didAskForScreenAccess") }
+        set { defaults.set(newValue, forKey: "didAskForScreenAccess") }
+    }
+
     /// The settings of the most recent export, replayed by Export Again.
     var lastExport: ExportSettings? {
         get { decode("lastExport") }

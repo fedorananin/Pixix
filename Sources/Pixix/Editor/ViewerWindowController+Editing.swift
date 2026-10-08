@@ -62,6 +62,12 @@ extension ViewerWindowController {
         startEditing(document: document, fileURL: nil, properties: nil, startsUnsaved: true)
     }
 
+    /// Starts editing a document that was made elsewhere and has never been a file: a screenshot with its markup.
+    func openDocument(_ document: Document) {
+        if editor != nil { stopEditing() }
+        startEditing(document: document, fileURL: nil, properties: nil, startsUnsaved: true)
+    }
+
     private func startEditing(document: Document, fileURL: URL?, properties: [CFString: Any]?, startsUnsaved: Bool) {
         stopPlaybackForEditing()
         let editor = EditorController(

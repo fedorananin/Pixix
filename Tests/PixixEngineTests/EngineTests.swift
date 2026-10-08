@@ -843,3 +843,69 @@ func dump(_ document: Document, _ name: String) {
         #expect(loaded.pixels() == document.pixels())
     }
 }
+
+@Suite struct FrameGeometryTests {
+    private let screen = CGRect(x: 0, y: 0, width: 400, height: 300)
+
+    @Test func freeFrameFollowsThePointerInAnyDirection() {
+        let anchor = CGPoint(x: 100, y: 100)
+        #expect(FrameGeometry.frame(anchor: anchor, to: CGPoint(x: 160, y: 130), ratio: nil) == CGRect(x: 100, y: 100, width: 60, height: 30))
+        #expect(FrameGeometry.frame(anchor: anchor, to: CGPoint(x: 40, y: 70), ratio: nil) == CGRect(x: 40, y: 70, width: 60, height: 30))
+    }
+
+    @Test func proportionsGrowTheShorterSide() {
+        let wide = FrameGeometry.frame(anchor: .zero, to: CGPoint(x: 160, y: 10), ratio: 16.0 / 9)
+        #expect(wide == CGRect(x: 0, y: 0, width: 160, height: 90))
+        let tall = FrameGeometry.frame(anchor: CGPoint(x: 200, y: 200), to: CGPoint(x: 190, y: 110), ratio: 1)
+        #expect(tall == CGRect(x: 110, y: 110, width: 90, height: 90))
+    }
+
+    @Test func frameStopsAtTheBoundsAndKeepsItsProportions() {
+        // The pointer leaves the screen: a free frame ends at the edge.
+        let free = FrameGeometry.frame(anchor: CGPoint(x: 300, y: 200), to: CGPoint(x: 900, y: 900), ratio: nil, within: screen)
+        #expect(free == CGRect(x: 300, y: 200, width: 100, height: 100))
+        // A 2:1 frame from the same corner has 100 px of room both ways, so the height decides.
+        let fixed = FrameGeometry.frame(anchor: CGPoint(x: 300, y: 200), to: CGPoint(x: 900, y: 900), ratio: 2, within: screen)
+        #expect(fixed == CGRect(x: 300, y: 200, width: 100, height: 50))
+        // Upward and to the left, where the room is 300 by 200.
+        let back = FrameGeometry.frame(anchor: CGPoint(x: 300, y: 200), to: CGPoint(x: -50, y: -50), ratio: 1, within: screen)
+        #expect(back == CGRect(x: 100, y: 0, width: 200, height: 200))
+    }
+
+    @Test func edgeDragKeepsTheOppositeEdge() {
+        let original = CGRect(x: 100, y: 100, width: 100, height: 50)
+        #expect(FrameGeometry.frame(original, draggingEdge: 1, to: CGPoint(x: 260, y: 0), ratio: nil) == CGRect(x: 100, y: 100, width: 160, height: 50))
+        #expect(FrameGeometry.frame(original, draggingEdge: 0, to: CGPoint(x: 0, y: 80), ratio: nil) == CGRect(x: 100, y: 80, width: 100, height: 70))
+        // With proportions the other dimension grows about the middle.
+        let fixed = FrameGeometry.frame(original, draggingEdge: 2, to: CGPoint(x: 0, y: 200), ratio: 2)
+        #expect(fixed == CGRect(x: 50, y: 100, width: 200, height: 100))
+        // An edge cannot pass the opposite one.
+        #expect(FrameGeometry.frame(original, draggingEdge: 3, to: CGPoint(x: 500, y: 0), ratio: nil).width == 1)
+    }
+
+    @Test func edgeDragWithProportionsStaysInside() {
+        let original = CGRect(x: 20, y: 100, width: 60, height: 30)
+        // Pulling the bottom edge down would widen the frame past the left side of the screen.
+        let result = FrameGeometry.frame(original, draggingEdge: 2, to: CGPoint(x: 0, y: 290), ratio: 2, within: screen)
+        #expect(result == CGRect(x: 0, y: 100, width: 100, height: 50))
+        #expect(screen.contains(result))
+    }
+
+    @Test func fittingMovingAndSizing() {
+        #expect(FrameGeometry.fitted(CGRect(x: 0, y: 0, width: 200, height: 100), ratio: 1) == CGRect(x: 50, y: 0, width: 100, height: 100))
+        #expect(FrameGeometry.moved(CGRect(x: 350, y: -20, width: 100, height: 100), into: screen) == CGRect(x: 300, y: 0, width: 100, height: 100))
+        #expect(FrameGeometry.moved(CGRect(x: 10, y: 10, width: 900, height: 50), into: screen) == CGRect(x: 0, y: 10, width: 400, height: 50))
+        // A typed size keeps the corner, unless the frame would leave the screen.
+        #expect(FrameGeometry.sized(CGRect(x: 50, y: 50, width: 10, height: 10), to: CGSize(width: 200, height: 100), within: screen)
+            == CGRect(x: 50, y: 50, width: 200, height: 100))
+        #expect(FrameGeometry.sized(CGRect(x: 300, y: 250, width: 10, height: 10), to: CGSize(width: 200, height: 100), within: screen)
+            == CGRect(x: 200, y: 200, width: 200, height: 100))
+        #expect(FrameGeometry.handlePoints(CGRect(x: 0, y: 0, width: 10, height: 20))[5] == CGPoint(x: 10, y: 10))
+    }
+
+    @MainActor @Test func lockedBackgroundStaysLocked() throws {
+        let document = try #require(Document(image: quadrantImage(), layerName: "Screenshot", isLocked: true))
+        #expect(document.layers.first?.isLocked == true)
+        #expect(document.layers.first?.name == "Screenshot")
+    }
+}

@@ -3,12 +3,27 @@ import CoreImage
 import PixixCodec
 import PixixEngine
 
+/// What an editing session needs from whatever shows it: a viewer window, or the screenshot overlay.
+@MainActor
+protocol EditorHost: AnyObject {
+    var canvas: CanvasView { get }
+    var window: NSWindow? { get }
+    var editor: EditorController? { get }
+    func updateTitle()
+    func showToast(_ text: String)
+    func presentEditorDialog(_ dialog: EditorDialog)
+    func present(_ error: Error)
+    func addImageLayer(_ sender: Any?)
+}
+
+extension ViewerWindowController: EditorHost {}
+
 /// Runs an editing session in a window: owns the document, puts it on screen and routes input to tools.
 @MainActor
 final class EditorController: CanvasToolHandler {
     let document: Document
     let model = EditorModel()
-    unowned let host: ViewerWindowController
+    unowned let host: any EditorHost
     let canvas: CanvasView
 
     /// The file Save overwrites. Nil when there is nothing sensible to overwrite.
@@ -33,7 +48,7 @@ final class EditorController: CanvasToolHandler {
     private var isRenderScheduled = false
     private lazy var selectionOverlay = SelectionOverlay(canvas: canvas, document: document)
 
-    init(host: ViewerWindowController, document: Document, fileURL: URL?, properties: [CFString: Any]?, startsUnsaved: Bool) {
+    init(host: any EditorHost, document: Document, fileURL: URL?, properties: [CFString: Any]?, startsUnsaved: Bool) {
         self.host = host
         self.canvas = host.canvas
         self.document = document
@@ -238,6 +253,14 @@ final class EditorController: CanvasToolHandler {
     func resetCrop() {
         model.straighten = 0
         (tool as? CropTool)?.reset()
+    }
+
+    /// Offers a key to the tool alone, for a host with its own idea of what the other keys do.
+    func toolKeyDown(_ event: NSEvent) -> Bool { tool.keyDown(event) }
+
+    /// Ends typing on the canvas, so that what is rendered next has no half-made text in it.
+    func finishTyping() {
+        (tool as? TextTool)?.endEditing()
     }
 
     func toolMouseDown(at point: CGPoint, event: NSEvent) { tool.mouseDown(at: point, event: event) }

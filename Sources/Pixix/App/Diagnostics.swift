@@ -3,13 +3,22 @@ import CoreImage
 import IOSurface
 import PixixCodec
 import PixixEngine
+import SwiftUI
+
+/// A window a scenario made for its own picture, such as Settings laid out off the screen.
+@MainActor private var scenarioWindow: NSWindow?
 
 extension ViewerWindowController {
     /// Saves a picture of the whole window, title bar included, without needing screen-recording permission.
     /// When a sheet is open, the sheet is what gets saved.
     func writeSnapshot(to url: URL) {
         guard let window else { return }
-        let target = window.attachedSheet ?? infoWindow ?? window
+        // A screenshot overlay is a window of its own, and during a capture it is what there is to see.
+        if let overlay = CaptureAgent.shared.session?.screens.first {
+            overlay.writeSnapshot(to: url)
+            return
+        }
+        let target = scenarioWindow ?? window.attachedSheet ?? infoWindow ?? window
         guard let view = target.contentView?.superview ?? target.contentView else { return }
         // Offscreen capture cannot see GPU surfaces, so show the same pixels as ordinary images for the shot.
         if let editor {
@@ -30,7 +39,11 @@ extension ViewerWindowController {
 
     /// Scripted scenarios for snapshots. `done` is called when the window is ready to be photographed.
     ///
-    /// In the viewer: `mouse`, `windows`, `files`, `livetext`, `info`, `menu`.
+    /// In the viewer: `mouse`, `windows`, `files`, `livetext`, `info`, `menu`, and for screenshots `capture`,
+    /// `capture-full`, `capture-window`, `capture-edit`, `capture-save`, `capture-text`, and for measuring
+    /// memory `capture-open` (the overlay alone), `capture-closed` (after it is dismissed) and `capture-repeat`
+    /// (eight captures in a row); `settings` is the
+    /// Settings window with the screenshot options laid out.
     /// With `--edit`: `meme`, `tools`, `markup`, `text`, `layers`, `append`, `subject`, `cutout`, `save`, `crop`,
     /// `crop-applied`, `select`, `effect`, `export`, `menu`.
     func runDemoScript(_ name: String, done: @escaping @MainActor () -> Void) {
@@ -47,6 +60,57 @@ extension ViewerWindowController {
             for item in menu?.items ?? [] {
                 if item.isSeparatorItem { print("--") } else { print(validateMenuItem(item) ? item.title : "[\(item.title)]") }
             }
+        case "capture-repeat":
+            // One capture after another, each marked up and dismissed: memory that climbs with every round is a leak.
+            func round(_ number: Int) {
+                guard number <= 8 else { return done() }
+                runCaptureScript("capture-closed")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
+                    print(String(format: "after capture %d: %.0f MB", number, LaunchOptions.memoryFootprint()?.now ?? 0))
+                    round(number + 1)
+                }
+            }
+            print(String(format: "before any capture: %.0f MB", LaunchOptions.memoryFootprint()?.now ?? 0))
+            round(1)
+            return
+        case "capture-open":
+            // The overlay alone, before anything is selected: what a press of the shortcut costs.
+            _ = beginScriptedCapture()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { done() }
+            return
+        case "capture", "capture-full", "capture-window", "capture-edit", "capture-closed":
+            runCaptureScript(name)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { done() }
+            return
+        case "capture-save":
+            runCaptureSaveScript(done: done)
+            return
+        case "settings", "shortcut":
+            // Out of sight like every scripted window, and without switching anything on.
+            let settings = NSWindow(contentRect: .zero, styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            settings.isReleasedWhenClosed = false
+            settings.title = "Pixix Settings"
+            settings.contentViewController = NSHostingController(rootView: SettingsView(model: SettingsModel(previewingScreenshotOptions: true)))
+            settings.alphaValue = 0
+            settings.ignoresMouseEvents = true
+            settings.orderBack(nil)
+            settings.setFrameOrigin(NSPoint(x: -30000, y: -30000))
+            scenarioWindow = settings
+            if name == "shortcut" {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.runShortcutScript(in: settings, done: done) }
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { done() }
+            }
+            return
+        case "capture-text":
+            // Reads the text in the picture the way Copy Text does, without touching the clipboard.
+            guard let image = displayed?.loaded.image else { break }
+            Task {
+                let text = await CaptureScreenController.readText(in: image)
+                print("text: \(text.replacingOccurrences(of: "\n", with: " | "))")
+                done()
+            }
+            return
         case "info":
             showInfo(nil)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { done() }
@@ -83,6 +147,230 @@ extension ViewerWindowController {
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
             self?.wait(for: condition, attempts: attempts + 1, then: done)
+        }
+    }
+
+    /// Records shortcuts the way a person does: a click on the button in Settings, then key presses that arrive
+    /// through the app's event queue. Prints what the button says after each, and puts the saved shortcut back.
+    private func runShortcutScript(in settings: NSWindow, done: @escaping @MainActor () -> Void) {
+        func find(_ view: NSView) -> ShortcutRecorderButton? {
+            if let button = view as? ShortcutRecorderButton { return button }
+            for subview in view.subviews {
+                if let button = find(subview) { return button }
+            }
+            return nil
+        }
+        guard let button = settings.contentView.flatMap(find) else {
+            print("shortcut: the button is not in the window")
+            return done()
+        }
+        let savedCombo = UserDefaults.standard.data(forKey: "captureHotKey")
+        let savedCleared = UserDefaults.standard.object(forKey: "captureHotKeyCleared") as? Bool
+        print("shortcut: button says \"\(button.title)\", enabled \(button.isEnabled)")
+        let number = settings.windowNumber
+        func key(_ code: UInt16, _ characters: String, _ flags: NSEvent.ModifierFlags, type: NSEvent.EventType = .keyDown) -> NSEvent? {
+            NSEvent.keyEvent(
+                with: type, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: number, context: nil, characters: characters, charactersIgnoringModifiers: characters,
+                isARepeat: false, keyCode: code
+            )
+        }
+        let steps: [(String, NSEvent?)] = [
+            ("K alone", key(40, "k", [])),
+            ("⌃⌥ held", key(59, "", [.control, .option], type: .flagsChanged)),
+            ("⌃⌥K", key(40, "k", [.control, .option])),
+            ("⇧⌘4", key(21, "$", [.command, .shift])),
+            ("⇧⌘5", key(23, "%", [.command, .shift])),
+            ("F13", key(105, "", [])),
+            ("⌥⌫", key(51, "", [.option])),
+            ("Delete", key(51, "", [])),
+        ]
+        func run(_ index: Int) {
+            guard index < steps.count else {
+                if let savedCombo { UserDefaults.standard.set(savedCombo, forKey: "captureHotKey") } else { UserDefaults.standard.removeObject(forKey: "captureHotKey") }
+                if let savedCleared { UserDefaults.standard.set(savedCleared, forKey: "captureHotKeyCleared") } else { UserDefaults.standard.removeObject(forKey: "captureHotKeyCleared") }
+                return done()
+            }
+            if !button.isRecording { button.performClick(nil) }
+            if let event = steps[index].1 { NSApp.postEvent(event, atStart: false) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                let saved = Settings.shared.captureHotKey
+                print("\(steps[index].0): button \"\(button.title)\", recording \(button.isRecording), saved \(saved?.title ?? "none"), used by macOS \(saved?.isUsedByMacOS ?? false)")
+                run(index + 1)
+            }
+        }
+        run(0)
+    }
+
+    /// What the panels say under the pointer. No pointer is there, so the views that watch for it are told that
+    /// it came, the way the system tells them. One hint is left showing for the picture.
+    private func reportHints(on screen: CaptureScreenController, scenario name: String) {
+        let moved = NSEvent.mouseEvent(
+            with: .mouseMoved, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+            eventNumber: 0, clickCount: 0, pressure: 0
+        )!
+        var watchers: [HoverView] = []
+        func collect(_ view: NSView) {
+            if let watcher = view as? HoverView { watchers.append(watcher) }
+            view.subviews.forEach(collect)
+        }
+        if let content = screen.panel.contentView { collect(content) }
+        var hints: [String] = []
+        for watcher in watchers {
+            watcher.mouseEntered(with: moved)
+            if let hint = screen.model.hint { hints.append(hint.text) }
+            watcher.mouseExited(with: moved)
+        }
+        print("hints, \(watchers.count) controls, \(screen.model.hint == nil ? "cleared on leaving" : "stuck"): \(hints.joined(separator: " | "))")
+        let shown = name == "capture" ? "Pen (P)" : name == "capture-full" ? "Copy (" : "Proportions"
+        for watcher in watchers {
+            watcher.mouseEntered(with: moved)
+            if screen.model.hint?.text.hasPrefix(shown) == true { break }
+            watcher.mouseExited(with: moved)
+        }
+    }
+
+    /// A screenshot session on the picture in the window instead of on the screen. It needs no permission and
+    /// its overlay is out of sight.
+    private func beginScriptedCapture() -> (screen: CaptureScreenController, size: CGSize)? {
+        guard let image = displayed?.loaded.image else { return nil }
+        let scale = NSScreen.main?.backingScaleFactor ?? 2
+        let w = CGFloat(image.width), h = CGFloat(image.height)
+        var shot = ScreenShot(frame: CGRect(x: 0, y: 0, width: w / scale, height: h / scale), image: image)
+        shot.windows = [CGRect(x: (w * 0.1).rounded(), y: (h * 0.15).rounded(), width: (w * 0.5).rounded(), height: (h * 0.6).rounded())]
+        let session = CaptureAgent.shared.beginSession(shots: [shot], unattended: true)
+        return session.screens.first.map { ($0, CGSize(width: w, height: h)) }
+    }
+
+    /// Saves a part of the picture the way the Save button does, into a folder next to the picture, and prints
+    /// what landed there. Run it on a scratch copy.
+    private func runCaptureSaveScript(done: @escaping @MainActor () -> Void) {
+        guard let url = currentURL, let (screen, size) = beginScriptedCapture() else { return done() }
+        let press = NSEvent.mouseEvent(
+            with: .leftMouseDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+            eventNumber: 0, clickCount: 1, pressure: 1
+        )!
+        screen.toolMouseDown(at: CGPoint(x: size.width * 0.2, y: size.height * 0.2), event: press)
+        screen.toolMouseDragged(to: CGPoint(x: size.width * 0.6, y: size.height * 0.5), event: press)
+        screen.toolMouseUp(at: CGPoint(x: size.width * 0.6, y: size.height * 0.5), event: press)
+        guard let image = screen.renderedImage() else { return done() }
+        let target = url.deletingLastPathComponent().appendingPathComponent("captured/Screenshot.png")
+        try? FileManager.default.removeItem(at: target)
+        CaptureOutput.write(image, scale: screen.shot.scale, format: .png, to: target)
+        wait(for: { FileManager.default.fileExists(atPath: target.path(percentEncoded: false)) }) {
+            let info = (try? ImageSource(url: target))?.properties() ?? [:]
+            print("saved: \(target.lastPathComponent), \(info[kCGImagePropertyPixelWidth] ?? "?")×\(info[kCGImagePropertyPixelHeight] ?? "?") px at \(info[kCGImagePropertyDPIWidth] ?? "?") dpi")
+            done()
+        }
+    }
+
+    /// Selects a part of the picture, marks it up through the entry points real mouse input uses, and prints
+    /// what would be copied. `capture-full` takes the whole display, where the panels have to move inside;
+    /// `capture-window` clicks a window; `capture-edit` then hands the result to the editor in this window.
+    private func runCaptureScript(_ name: String) {
+        guard let (screen, size) = beginScriptedCapture() else { return }
+        let w = size.width, h = size.height
+
+        func event(_ type: NSEvent.EventType) -> NSEvent {
+            NSEvent.mouseEvent(
+                with: type, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+                eventNumber: 0, clickCount: 1, pressure: 1
+            )!
+        }
+        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: w * x, y: h * y) }
+        func drag(_ a: CGPoint, _ b: CGPoint) {
+            screen.toolMouseDown(at: a, event: event(.leftMouseDown))
+            for step in 1...8 {
+                let t = CGFloat(step) / 8
+                screen.toolMouseDragged(to: CGPoint(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t), event: event(.leftMouseDragged))
+            }
+            screen.toolMouseUp(at: b, event: event(.leftMouseUp))
+        }
+        func report(_ label: String) {
+            let selection = screen.selection ?? .zero
+            print("\(label): \(Int(selection.minX)),\(Int(selection.minY)) \(Int(selection.width))×\(Int(selection.height))")
+        }
+
+        // The proportions are a saved preference; a scripted run must leave it as it found it.
+        let savedAspect = Settings.shared.captureAspect
+        defer { Settings.shared.captureAspect = savedAspect }
+        screen.model.aspect = nil
+        // Later, once the panels have been laid out.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in self?.reportHints(on: screen, scenario: name) }
+        switch name {
+        case "capture-full":
+            screen.selectWholeScreen()
+            report("whole screen")
+        case "capture-window":
+            screen.toolMouseMoved(to: point(0.3, 0.4), event: event(.mouseMoved))
+            drag(point(0.3, 0.4), point(0.3, 0.4))
+            report("click on a window")
+        default:
+            drag(point(0.25, 0.2), point(0.7, 0.8))
+            report("free drag")
+            screen.model.aspect = CaptureAspect(width: 16, height: 9)
+            report("16 : 9 chosen")
+            // The bottom-right corner, pulled outward past the screen.
+            if let corner = screen.selection.map({ CGPoint(x: $0.maxX, y: $0.maxY) }) { drag(corner, point(1.2, 1.2)) }
+            report("corner dragged out")
+            screen.model.width = 800
+            screen.model.height = 500
+            screen.applyTypedSize()
+            report("800 × 500 typed, proportions \(screen.model.aspect?.title ?? "free")")
+            screen.apply(CaptureSize.presets[1])
+            report("preset \(CaptureSize.presets[1].name)")
+        }
+        guard let editor = screen.editor, let selection = screen.selection else { return }
+        func inside(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: selection.minX + selection.width * x, y: selection.minY + selection.height * y)
+        }
+        screen.choose(.arrow, in: .arrow)
+        drag(inside(0.15, 0.8), inside(0.45, 0.45))
+        screen.choose(.rectangle, in: .shape)
+        drag(inside(0.5, 0.15), inside(0.9, 0.5))
+        screen.choose(.badge, in: .badge)
+        drag(inside(0.12, 0.2), inside(0.12, 0.2))
+        drag(inside(0.25, 0.2), inside(0.25, 0.2))
+        screen.setColor(CaptureModel.palette[4])
+        screen.choose(.highlighter, in: .draw)
+        drag(inside(0.1, 0.92), inside(0.6, 0.92))
+        screen.choose(.pixelateRegion, in: .hide)
+        drag(inside(0.55, 0.6), inside(0.9, 0.85))
+        screen.choose(.text, in: .text)
+        drag(inside(0.3, 0.32), inside(0.3, 0.32))
+        editor.typeText("Typed here")
+        screen.setColor(CaptureModel.palette[0])
+        // The pointer on bare screen moves the selection; on markup it moves the markup.
+        screen.choose(.move, in: .pointer)
+        let before = screen.selection ?? .zero
+        drag(inside(0.75, 0.05), CGPoint(x: inside(0.75, 0.05).x - 40, y: inside(0.75, 0.05).y + 20))
+        report("selection moved by \(Int((screen.selection ?? .zero).minX - before.minX)),\(Int((screen.selection ?? .zero).minY - before.minY))")
+        screen.model.flyout = name == "capture-full" ? .color : nil
+
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("pixix.diagnostics.capture"))
+        let copied = screen.writeImage(to: pasteboard)
+        let picture = NSImage(pasteboard: pasteboard)
+        print("copy: \(copied), \(Int(picture?.size.width ?? 0))×\(Int(picture?.size.height ?? 0)) pt")
+        pasteboard.releaseGlobally()
+        if let rendered = screen.renderedImage() { print("picture: \(rendered.width)×\(rendered.height) px") }
+        print("layers: \(editor.document.layers.map(\.name)), undo \(editor.document.history.entries.map(\.name))")
+        print("shortcut: \(Settings.shared.captureHotKey?.title ?? "none"), file \(CaptureOutput.fileName(format: .png, date: Date(timeIntervalSince1970: 0)))")
+        // Claimed and let go at once: this only asks macOS whether the shortcut is free.
+        var presses = 0
+        let probe = GlobalHotKey { presses += 1 }
+        let granted = probe.register(Settings.shared.captureHotKey ?? .standard)
+        // The press is handed to the app the way macOS hands it over; nobody presses anything.
+        let delivered = probe.simulatePress()
+        probe.unregister()
+        print("shortcut granted by macOS: \(granted), a press delivered: \(delivered), handled \(presses) time(s), screen access: \(ScreenGrabber.hasAccess)")
+        // The capture is over: what it held should be given back.
+        if name == "capture-closed" { CaptureAgent.shared.session?.end() }
+        if name == "capture-edit", let document = screen.makeDocument() {
+            CaptureAgent.shared.session?.end(returningFocus: false)
+            openDocument(document)
+            self.editor?.model.tool = .move
+            self.editor?.model.expandedSections = ["layers", "history"]
+            print("editor: \(Int(document.size.width))×\(Int(document.size.height)), layers \(document.layers.map(\.name)), locked \(document.layers.filter(\.isLocked).count), dirty \(self.editor?.isDirty ?? false)")
         }
     }
 

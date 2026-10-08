@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.0
+
+- **Screenshots.** Switched on in Settings, Pixix takes screenshots: press the shortcut (`⇧⌘2`, or one of your
+  choosing), drag over a part of the screen, and copy or save it. A click takes a window, `⌘A` the display.
+- **Size and proportions.** The selection shows its size in pixels. It can be held to 16 : 9 and other
+  proportions, given a ready-made size, or have its width and height typed in.
+- **Markup on the spot.** A small panel beside the selection draws arrows, lines, shapes, text, numbered badges
+  and a highlighter, and pixelates or blurs what should not be seen, without opening a window. One click sends
+  the result to the full editor with every mark still an editable layer.
+- **The shortcut is yours to choose.** Settings records any key with `⌘`, `⌥` or `⌃`, or a function key,
+  including the ones macOS uses for its own screenshots, and says when macOS still holds the one you picked.
+- **Copy the text** in a selection with `⇧⌘C`.
+- **In the menu bar.** With screenshots on, Pixix leaves the Dock when its last window closes but stays behind
+  a menu bar icon, and can start at login. With the option off, closing the last window quits as before.
+- An editor window on a pasted picture or a screenshot is titled "Untitled" and shows its size.
+
 ## 0.2.0
 
 - **Several windows.** Each picture opened from Finder gets a window of its own, and `⌥⌘N` opens another

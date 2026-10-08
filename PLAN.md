@@ -2,7 +2,7 @@
 
 An image viewer and editor for macOS. It views photos like Windows 11 Photos, converts in a couple of clicks, and edits with layers at the level of Paint.NET. Built by Fedor Ananin for his own machine, and published as open source at <https://github.com/fedorananin/Pixix> for anyone who wants it.
 
-Status: phases 0–5 are implemented and phase 6 partly; section 9 has the details and section 12 lists what is missing. Sections 1–8 describe the design as built.
+Status: phases 0–5 are implemented, phase 6 partly, and phase 7 (screenshots) except for what section 12 lists; section 9 has the details. Sections 1–8 describe the design as built.
 
 ## 1. Goals and non-goals
 
@@ -14,6 +14,7 @@ Goals, most important first:
 4. Quick edits: crop, aspect ratio, stretch, sliders, arrows, text, blurring and pixelating regions.
 5. Layers: stack several images on top of each other, extend the canvas.
 6. A full raster editor at the level of Paint.NET.
+7. Screenshots: select a part of the screen, mark it up where it is, copy or save. An option, off by default.
 
 Non-goals: photo catalog or library, cloud, RAW development, plugins, App Store, notarization, Intel Macs, macOS older than 26, 16-bit and HDR editing, localization.
 
@@ -65,6 +66,7 @@ Nothing generated during a build is written inside the project folder.
 - Cold start target: first frame within 150 ms for an ordinary JPEG. Measured on this machine: about 160 ms from process creation, for both a 4000 px and a 6000 px JPEG. The very first launch after a build takes a few hundred milliseconds longer while macOS verifies the new signature. Of the 160 ms, roughly 60 are AppKit starting up and 35 are the toolbar; the decode runs in parallel from the first moment the file name is known.
 - How: no storyboard or nib, the window is created in code; decoding starts before any interface exists; the first thing shown is a frame downsampled to window size, with full resolution loaded right after; the editor, panels and libwebp are not touched until first use.
 - Fallback if the cold start turns out to be noticeable: after the window closes, the process stays alive for a few minutes without a Dock icon (activation policy `.accessory`) and opens the next file instantly. Enabled only if measurements call for it, as a setting.
+- With screenshots switched on (section 8.7) the process does stay: closing the last window removes the Dock icon and leaves the menu bar icon. The next file opened then needs no launch at all. Linking ScreenCaptureKit, ServiceManagement and Carbon for this made no measurable difference to the cold start (twenty launches of each build, interleaved: the same minimum, medians within the noise).
 
 ## 5. Code layout
 
@@ -78,6 +80,7 @@ Sources/
   Pixix/Viewer    window, canvas, gestures, folder browsing, image loading
   Pixix/Export    export dialog, saving
   Pixix/Editor    editor controller, tools, inspector, dialogs
+  Pixix/Capture   screenshots: shortcut, menu bar icon, screen grabbing, the overlay and its small editor
 Tests/
   PixixCodecTests/
   PixixEngineTests/
@@ -223,6 +226,24 @@ The scenario must work without the layers panel and without reading any help. Th
 
 Steps 2–4 also exist as one command: Layer › Add Image Below (`⌥⌘B`) extends the canvas and puts the chosen picture there, scaled to the width of the canvas. Add Image to the Right does the same sideways.
 
+### 8.7. Screenshots
+
+An option in Settings, off by default. The reference is Sleekshot.
+
+**Staying alive.** A global shortcut needs a running process, which is at odds with "closing the last window quits". The choice is the user's: with the option on, `CaptureAgent` claims the shortcut (Carbon `RegisterEventHotKey`: no permission, no event tap, any input language), puts an icon in the menu bar, and switches the app to `.accessory` when its last window closes and back to `.regular` when one opens. Start at login is `SMAppService.mainApp`; a login launch opens no window. One process, so one Screen Recording permission.
+
+**Freezing the screen.** The shortcut takes a picture of every display (`SCScreenshotManager`, at full resolution, without the pointer) and puts a borderless panel over each, showing that picture. The selection is cut from the frozen picture, so menus and hover states survive, and pixelate and blur have pixels to work on. Rejected: a transparent overlay with the capture at the end — markup would have nothing under it to blur, and the overlay would have to be kept out of its own picture.
+
+**The small editor is the editor.** The frozen display becomes a `Document` with a locked background layer, shown by the same `CanvasView` at one image pixel per screen pixel, with an `EditorController` on it. The overlay is its `EditorHost`, as the viewer window is in the full editor. So arrow, line, pen, highlighter, rectangle, ellipse, pixelate, blur, text and badges are the tools of section 8.1, and undo is the document's history. The overlay adds the selection frame, the routing of the mouse (corners and edges of the frame resize it; inside, the tool draws; the pointer tool on bare screen moves the frame) and three panels: the size label with its menu of proportions and sizes, the tools beside the selection, the actions under it. The panels move to the other side or inside the selection when the screen edge is in the way.
+
+**Results.** Copy puts the selection on the clipboard at its on-screen size. Save writes PNG or JPEG into a folder without asking, tagged with the display's resolution; Save As asks. Copy Text runs the selection through VisionKit. Open in the Editor crops the document to the selection and hands it, object layers and all, to an editor window: the markup stays editable.
+
+**Hints.** Tooltips of the system open under a window of the overlay's level, so the panels say what a button does themselves, beside the button, and watch the pointer with tracking areas that work whether or not the app is the active one.
+
+**Memory** (measured 2026-10-08 with `--memory`, on a 3024 × 1964 display). Waiting in the menu bar: about 10 MB freshly started, about 85 MB after a few screenshots, none of it pictures. A capture with markup costs about 250 MB while the overlay is up and gives it back when dismissed, except some 40 MB of caches; eight captures in a row settle at the same figure, so nothing leaks. For comparison, the viewer holds about 260 MB on a 16 MP picture and the editor about 460 MB on opening one.
+
+**Selection arithmetic** — a frame pulled by corners and edges, held to proportions, kept on the screen — is `FrameGeometry` in the engine, shared with the crop tool and covered by tests.
+
 ## 9. Phases
 
 Every phase ends with an app that can be used.
@@ -236,6 +257,7 @@ Every phase ends with an app that can be used.
 | 4. Markup and layers | Object layers, blur and pixelate regions, image layers, transform frame, canvas extension, layers panel, `.pixix` format | The meme scenario works with no hints | Done |
 | 5. Raster editor | Selections, brushes, fill, gradient, clone stamp, blend modes, history panel, adjustment and effect menus | The first tier of 8.4 is covered, then the second | Done, except the items in section 12 |
 | 6. Polish | Settings, thumbnail strip, slideshow, batch conversion, printing, `.pixix` previews in Finder, images above 100 MP | — | Settings, thumbnail strip, slideshow and printing done; the rest is not |
+| 7. Screenshots | Global shortcut, menu bar icon, frozen-screen overlay, selection with size and proportions, markup in place, copy, save, text recognition, hand-off to the editor | A part of the screen is on the clipboard, marked up, without a window opening | Done. Checked by scripted scenarios on a picture standing in for the screen, and used by the author on a real one; section 12 lists what nobody has tried |
 
 "Done" means built and checked by the unit tests and by scripted screenshots of the running app (see AGENTS.md). In 0.2.0 the viewer gained several windows, folders, file operations, a context menu, Live Text and the histogram, and the editor gained typing on the canvas, speech bubbles, badges, spotlights, shadows, Select Subject, Add Image Below and a straightened crop frame that shrinks to fit: a tilted frame is made smaller about its center until no corner is empty, unless it was pulled past the picture on purpose. Gesture feel — swipe thresholds, pinch, the hand on a real trackpad — has not been tried by a person yet.
 
@@ -249,6 +271,7 @@ Phases 0–2 remove the main pain. Phases 3–4 solve the meme task. Phase 5 is 
 - **Overwriting on Save.** `⌘S` replaces the original with no confirmation, and for JPEG that means a lossy re-encode. Mitigations are the atomic write, undo within the session, and the original left in the Trash by the first Save.
 - **File order.** The sort order of a specific Finder window cannot be read without a separate permission to control Finder. We sort by name; Settings offers date and size.
 - **Folder access.** On first access to Downloads, Documents, Desktop and cloud folders, macOS asks for permission — once per folder.
+- **Screen Recording permission.** Screenshots need it, and macOS ties it to the code signature. A build signed with a stable certificate keeps it; the ad hoc signed releases may be asked again after each update. macOS has also been known to ask periodically whether an app may go on seeing the screen.
 - **No Xcode** means no Instruments and no graphical debugger. Launch timing is measured with the `--timing` switch and `PIXIX_TRACE`, the interface is checked with scripted screenshots, debugging goes through `lldb` in the terminal.
 
 ## 11. Decisions
@@ -261,6 +284,10 @@ Phases 0–2 remove the main pain. Phases 3–4 solve the meme task. Phase 5 is 
 6. The source is public under the MIT License. Releases are built by GitHub Actions, signed ad hoc and not notarized; users clear the quarantine flag with one command.
 
 ## 12. Not done
+
+- **Trying the rest of screenshots on a real screen.** The scripted scenarios run the overlay on a picture from a file, and the author has taken screenshots with the shortcut on a single display. Not tried by anyone: the overlay over full-screen apps and on a second display, typing through an input method, the menu bar coming back when a window opens from the menu bar state, and the launch at login.
+- **Decorative arrow styles** for screenshots. The reference has seven (a pointing hand, a brushed arrow, an outlined one); Pixix has one. They need drawing code in `ObjectRenderer` and an optional style field in `ShapeContent`.
+- **Screen recording, a link to share a screenshot, scrolling capture, pinning a screenshot to the screen.** The first two are what the reference has beyond this; a link would need a server.
 
 - **Batch conversion** of several selected files.
 - **Finder previews for `.pixix`** projects. They need a Quick Look extension, which is an app extension target and awkward to build without Xcode. The project folder contains `preview.png`.

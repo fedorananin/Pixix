@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         trace("will finish launching")
+        CaptureAgent.shared.isUnattended = launchOptions.isUnattended
         // Start decoding before any interface exists; the window is ready by the time the pixels are.
         prefetch(launchOptions.files)
         NSApp.mainMenu = MainMenu.build(recentDelegate: self)
@@ -44,16 +45,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if !launchOptions.files.isEmpty {
             open(launchOptions.files)
         }
+        if launchOptions.reportsMemory, launchOptions.startsInBackground, launchOptions.files.isEmpty {
+            // What the app weighs with no window at all, which is how it waits for the screenshot shortcut.
+            DispatchQueue.main.asyncAfter(deadline: .now() + launchOptions.snapshotDelay) { [self] in
+                launchOptions.reportMemory()
+                exit(0)
+            }
+            return
+        }
+        // Read now: the event that says how the app was started is gone after this call returns.
+        let startsHidden = launchOptions.startsInBackground || Self.wasLaunchedAtLogin
         // Files from Finder arrive through `application(_:open:)`, possibly a moment after launch.
         DispatchQueue.main.async { [self] in
-            if controllers.isEmpty, !didOpenFiles { present(makeController()) }
-            // A diagnostic run must not take the keyboard away from whoever is at the machine.
-            if !launchOptions.isUnattended { NSApp.activate() }
+            // A diagnostic run takes no shortcut and puts nothing in the menu bar.
+            let captures = !launchOptions.isUnattended && Settings.shared.capturesScreenshots
+            if captures { CaptureAgent.shared.start() }
+            guard controllers.isEmpty, !didOpenFiles, captures, startsHidden else {
+                if controllers.isEmpty, !didOpenFiles { present(makeController()) }
+                // A diagnostic run must not take the keyboard away from whoever is at the machine.
+                if !launchOptions.isUnattended { NSApp.activate() }
+                return
+            }
+            // Started at login to wait for the screenshot shortcut: no window, no Dock icon.
+            CaptureAgent.shared.updateDockPresence()
         }
     }
 
-    /// The point of the whole app: closing the last window removes it from the Dock.
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    /// True when macOS started the app as a login item rather than a person opening it.
+    private static var wasLaunchedAtLogin: Bool {
+        guard let event = NSAppleEventManager.shared().currentAppleEvent, event.eventID == kAEOpenApplication else { return false }
+        return event.paramDescriptor(forKeyword: keyAEPropData)?.enumCodeValue == keyAELaunchedAsLogInItem
+    }
+
+    /// The point of the whole app: closing the last window removes it from the Dock. With screenshots switched
+    /// on the icon still goes, but the process stays behind the menu bar icon to hear the shortcut.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { !CaptureAgent.shared.isRunning }
+
+    /// Opening Pixix again while it sits in the menu bar brings up a window.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag, controllers.isEmpty { present(makeController()) }
+        return true
+    }
 
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool { true }
 
@@ -105,6 +137,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Puts a window on screen, or for a diagnostic run brings it to life out of sight.
     private func present(_ controller: ViewerWindowController) {
         guard launchOptions.isUnattended, let window = controller.window else {
+            CaptureAgent.shared.showInDock()
             controller.showWindow(nil)
             return
         }
@@ -181,9 +214,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controller.openPastedImage(image)
     }
 
+    /// Opens a document made elsewhere, such as a screenshot with its markup, in an editor window.
+    func newWindow(editing document: Document) {
+        let controller = controllers.first { !$0.isEditing && $0.currentURL == nil } ?? makeController()
+        present(controller)
+        controller.openDocument(document)
+        if !launchOptions.isUnattended { NSApp.activate() }
+    }
+
     // MARK: Menu actions
 
     @objc func openDocument(_ sender: Any?) {
+        // From the menu bar icon the app may not be the active one.
+        NSApp.activate()
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.image, ProjectFile.contentType]
         panel.allowsMultipleSelection = true
@@ -263,7 +306,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             window.center()
             settingsWindow = window
         }
+        CaptureAgent.shared.showInDock()
         settingsWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate()
     }
 
     /// Re-sorts every open folder after the sort order changed in Settings.
@@ -285,8 +330,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if launchOptions.startsEditing, !controller.isEditing {
                 controller.beginEditing()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [self] in
-                    let finish: @MainActor () -> Void = {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                    let finish: @MainActor () -> Void = { [self] in
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [self] in
+                            // Before the picture is taken: taking it copies what is on screen.
+                            launchOptions.reportMemory()
                             controller.writeSnapshot(to: url)
                             Self.leaveAfterSnapshot()
                         }
@@ -295,7 +342,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
                 return
             }
-            let finish: @MainActor () -> Void = {
+            let finish: @MainActor () -> Void = { [self] in
+                launchOptions.reportMemory()
                 controller.writeSnapshot(to: url)
                 Self.leaveAfterSnapshot()
             }
@@ -312,7 +360,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 ///     Pixix --restore-default              give those types back; macOS asks to confirm each one
 ///     Pixix --timing --quit photo.jpg      print milliseconds to first frame and exit
 ///     Pixix --close photo.jpg              close the window once the picture is up; the app must exit by itself
+///     Pixix --background                   with screenshots switched on: start in the menu bar, without a window
 ///     Pixix --snapshot out.png photo.jpg   save a picture of the window and exit
+///     Pixix --snapshot out.png --memory photo.jpg   the same, and print how much memory the app holds by then
+///     Pixix --memory --background          print how much it holds with no window, as when it waits in the menu bar
 ///     Pixix --snapshot out.png --edit --demo meme photo.jpg   the same, in the editor, after a scripted scenario
 ///     Pixix --snapshot out.png --demo mouse photo.jpg         the viewer after a scripted scenario
 ///                                          (the scenarios are listed in Diagnostics.swift)
@@ -325,6 +376,10 @@ final class LaunchOptions {
     var reportsTiming = false
     var quitsAfterFirstFrame = false
     var closesAfterFirstFrame = false
+    /// Print the memory the process holds when the run is over.
+    var reportsMemory = false
+    /// Start without a window, to wait for the screenshot shortcut. Only means something with screenshots switched on.
+    var startsInBackground = false
     enum DefaultsAction { case register, restore }
     var defaultsAction: DefaultsAction?
     /// A scripted scenario. It calls the closure it is given once the window is ready to be photographed.
@@ -333,7 +388,9 @@ final class LaunchOptions {
 
     /// True for runs made from a terminal to measure or photograph the app. They show nothing on screen,
     /// never take the keyboard and never stop to ask a question.
-    var isUnattended: Bool { snapshotURL != nil || reportsTiming || quitsAfterFirstFrame || closesAfterFirstFrame }
+    var isUnattended: Bool {
+        snapshotURL != nil || reportsTiming || quitsAfterFirstFrame || closesAfterFirstFrame || reportsMemory
+    }
 
     init() {
         var arguments = Array(CommandLine.arguments.dropFirst())
@@ -355,6 +412,10 @@ final class LaunchOptions {
                 quitsAfterFirstFrame = true
             case "--close":
                 closesAfterFirstFrame = true
+            case "--background":
+                startsInBackground = true
+            case "--memory":
+                reportsMemory = true
             case "--make-default":
                 defaultsAction = .register
             case "--restore-default":
@@ -375,6 +436,41 @@ final class LaunchOptions {
             message += String(format: ", %.0f ms after the process was created", Date().timeIntervalSince(started) * 1000)
         }
         FileHandle.standardError.write(Data((message + "\n").utf8))
+    }
+
+    /// Prints the physical footprint of the process: the number Activity Monitor shows as Memory. It counts the
+    /// pictures held for the GPU as well, which a plain resident size does not.
+    func reportMemory() {
+        guard reportsMemory, let memory = Self.memoryFootprint() else { return }
+        let message = String(format: "memory: %.0f MB now, %.0f MB at the most", memory.now, memory.peak)
+        FileHandle.standardError.write(Data((message + "\n").utf8))
+        // PIXIX_MEMORY_DETAIL adds what the memory is made of, largest first, as the system's own tool sees it.
+        guard ProcessInfo.processInfo.environment["PIXIX_MEMORY_DETAIL"] != nil else { return }
+        let tool = Process()
+        tool.executableURL = URL(fileURLWithPath: "/usr/bin/footprint")
+        tool.arguments = ["-p", String(getpid())]
+        let pipe = Pipe()
+        tool.standardOutput = pipe
+        tool.standardError = FileHandle.nullDevice
+        guard (try? tool.run()) != nil else { return }
+        let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        tool.waitUntilExit()
+        let rows = output.split(separator: "\n").drop { !$0.contains("Category") }.dropFirst(2).prefix(9)
+        FileHandle.standardError.write(Data((rows.joined(separator: "\n") + "\n").utf8))
+    }
+
+    /// The footprint of the process in megabytes, now and at its highest so far.
+    static func memoryFootprint() -> (now: Double, peak: Double)? {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        guard result == KERN_SUCCESS else { return nil }
+        let megabyte = 1024.0 * 1024.0
+        return (Double(info.phys_footprint) / megabyte, Double(info.ledger_phys_footprint_peak) / megabyte)
     }
 
     /// When the kernel created this process, which is earlier than main() by the time the loader needs.

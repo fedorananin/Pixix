@@ -1,6 +1,6 @@
 # Pixix
 
-An image viewer and editor for macOS: it views like Windows 11 Photos and edits with layers like Paint.NET. Written by Fedor Ananin for his own Mac and published as open source under the MIT License at <https://github.com/fedorananin/Pixix>.
+An image viewer and editor for macOS: it views like Windows 11 Photos, edits with layers like Paint.NET, and takes screenshots that are marked up where they are taken. Written by Fedor Ananin for his own Mac and published as open source under the MIT License at <https://github.com/fedorananin/Pixix>.
 
 The design, its rationale and what is and is not finished are in [PLAN.md](PLAN.md). Read it before changing behavior. User-facing usage is in [README.md](README.md).
 
@@ -40,10 +40,11 @@ Installing changes which app opens images system-wide (`DefaultViewer.swift`); t
 | `Sources/Pixix/Viewer` | The window, the canvas with zoom and gestures, folder browsing, image loading. |
 | `Sources/Pixix/Export` | The export dialog and all saving. |
 | `Sources/Pixix/Editor` | Editor controller, tools, inspector, dialogs. |
+| `Sources/Pixix/Capture` | Screenshots: the global shortcut, the menu bar icon, grabbing the screen, the overlay with its selection and small editor. |
 
 ## Rules
 
-- Closing the last window quits the app. This is the core requirement; do not break it.
+- Closing the last window quits the app. This is the core requirement; do not break it. The one exception is the user's own choice: with **Take screenshots with Pixix** switched on in Settings, closing the last window takes Pixix out of the Dock but leaves the process behind its menu bar icon, because a global shortcut needs a process to hear it (`CaptureAgent`). The option is off by default, and with it off nothing of this runs.
 - The "open a file, see the image" path must stay light. Nothing in it may touch the editor or libwebp. Measure with `--timing` (below) before and after changes to launch code; the first frame currently lands about 160 ms after process creation.
 - Decoding and encoding run off the main thread and are cancellable.
 - `PixixCodec` and `PixixEngine` do not depend on windows and are covered by Swift Testing tests. New engine behavior gets a test.
@@ -62,6 +63,10 @@ Installing changes which app opens images system-wide (`DefaultViewer.swift`); t
 - **Menu shortcuts without modifiers** would swallow typing in every text field. Tool shortcuts are handled in `EditorController.handleKeyDown`, not as menu key equivalents. `F2` is the exception, because it types nothing.
 - **New fields in `TextContent`, `ShapeContent` and `EffectRegion` must be optional.** They are decoded from `.pixix` projects, and a project saved before the field existed has no key for it. A new enum case needs a bump of `ProjectFile.currentVersion`, so that older versions of the app say "saved by a newer version" instead of failing to read.
 - **A text layer's box and what it paints are two things.** `Layer.frameBounds` is the box the handles go around; `localBounds` also takes in shadows and the tail of a speech bubble. Place text by `frameBounds`, and change text through `Layer.setText`, which keeps the box and the tail where they are.
+- **The screenshot overlay edits with the editor's own tools.** The frozen display becomes a `Document` with a locked background, shown by a `CanvasView` at one image pixel per screen pixel, and an `EditorController` runs on it with the overlay as its `EditorHost`. A tool that works in the editor works there; do not write a second set. Sizes for markup are given in points and multiplied by `ScreenShot.scale`, never assumed to be 2.
+- **Tooltips do not show on the overlay:** the system opens them under a window of that level. The panels say what a button does themselves, through `CaptureModel.hint`; give a new button a `.hint(…)`, not `.help(…)`.
+- **Keys in the overlay are read by key code,** so they work with any input language. `charactersIgnoringModifiers` is Cyrillic on a Russian layout.
+- **Nothing may take a real screenshot, register the login item or start `CaptureAgent` to test something.** The first asks macOS for the Screen Recording permission with a dialog, the second posts a notification, the third puts an icon in the menu bar. The `capture` scenarios below run a whole session on a picture from a file instead, out of sight; in an unattended run `CaptureAgent` refuses to start, to capture and to ask macOS for anything, and the session writes no preferences. An `@Observable` property's `didSet` runs even when the property is set from an initializer, so a model built only to be photographed must not set one that has side effects.
 - **Vision and VisionKit are linked but must not run before the first frame.** Linking them costs nothing at launch (measured); creating `LiveTextController` does, so it is made on the run loop turn after a picture is shown.
 
 ## Checking the interface without a person
@@ -74,14 +79,18 @@ $APP --timing --quit photo.jpg                           # milliseconds to first
 PIXIX_TRACE=1 $APP --timing --quit photo.jpg             # with launch checkpoints
 $APP --snapshot out.png photo.jpg                        # picture of the viewer window
 $APP --snapshot out.png --edit --demo tools photo.jpg    # picture of the editor after a scripted scenario
+$APP --snapshot out.png --memory photo.jpg               # also print the memory the process holds by then
+$APP --memory --background                               # memory with no window, as when waiting in the menu bar
 ```
 
-Scenarios (`Sources/Pixix/App/Diagnostics.swift`), with `--edit`: `meme`, `tools`, `markup`, `text`, `layers`, `append`, `subject`, `cutout`, `save`, `crop`, `crop-applied`, `select`, `effect`, `export`, `menu`. `tools` drives every tool through the same entry points real mouse input uses. In the viewer, without `--edit`: `mouse` sends wheel and side-button events to the window and prints the zoom and the file after each one; `windows`, `files`, `livetext`, `info` and `menu` exercise what their names say and print what happened. Add a scenario when adding a tool or dialog, then look at the PNG. With a sheet or the Info popover open, that is what gets captured.
+`--memory` prints the physical footprint, the number Activity Monitor shows; `PIXIX_MEMORY_DETAIL=1` adds what it is made of. It works with any scenario.
+
+Scenarios (`Sources/Pixix/App/Diagnostics.swift`), with `--edit`: `meme`, `tools`, `markup`, `text`, `layers`, `append`, `subject`, `cutout`, `save`, `crop`, `crop-applied`, `select`, `effect`, `export`, `menu`. `tools` drives every tool through the same entry points real mouse input uses. In the viewer, without `--edit`: `mouse` sends wheel and side-button events to the window and prints the zoom and the file after each one; `windows`, `files`, `livetext`, `info` and `menu` exercise what their names say and print what happened. For screenshots: `capture` selects a part of the picture as if it were the screen, changes the selection every way there is, marks it up and prints what would be copied; `capture-full` takes the whole display, where the panels move inside the selection; `capture-window` clicks a window; `capture-edit` hands the result to the editor; `capture-save` writes it to a `captured` folder next to the picture; `capture-text` prints the text recognized in the picture; `settings` is the Settings window with the screenshot options laid out, `capture-open` is the overlay alone and `capture-closed` the app after a capture is dismissed, both for measuring memory, and `capture-repeat` runs eight captures in a row and prints the memory after each, which shows a leak as a climb; `shortcut` clicks the shortcut button there and sends key presses through the app's event queue, printing what the button says after each. During a capture scenario the snapshot is of the overlay. Add a scenario when adding a tool or dialog, then look at the PNG. With a sheet or the Info popover open, that is what gets captured.
 
 These runs are unattended, and must stay so: the author is usually at the machine while they run.
 
 - A run with `--snapshot`, `--timing`, `--quit` or `--close` keeps its window off the screen and transparent, does not activate the app, and quits without asking about unsaved edits (`LaunchOptions.isUnattended`). A scenario must never end in a question to the user.
-- `files` and `save` change the file they are given. Run them on a copy under `~/Library/Caches/Pixix/scratch`. `save` and the undo of `files` leave a file in the Trash; remove it afterwards.
+- `files` and `save` change the file they are given, and `capture-save` writes next to it. Run them on a copy under `~/Library/Caches/Pixix/scratch`. `save` and the undo of `files` leave a file in the Trash; remove it afterwards.
 - Put a time limit on every launch, for example `perl -e 'alarm 40; exec @ARGV' $APP …`, and check with `pgrep -lf Pixix` that nothing is left running.
 
 Engine tests can also dump renders for inspection: set `PIXIX_TEST_OUTPUT` to a folder.

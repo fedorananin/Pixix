@@ -305,8 +305,9 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate, Canvas
     func updateTitle() {
         guard let window else { return }
         guard let browser, let url = browser.current else {
-            window.title = "Pixix"
-            window.subtitle = ""
+            // A pasted picture or a screenshot is being edited without a file behind it.
+            window.title = editor.map { $0.fileURL?.lastPathComponent ?? "Untitled" } ?? "Pixix"
+            window.subtitle = editor.map { "\(Int($0.document.size.width)) × \(Int($0.document.size.height))" } ?? ""
             return
         }
         window.title = url.lastPathComponent
