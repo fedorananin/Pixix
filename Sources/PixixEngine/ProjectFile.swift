@@ -11,7 +11,8 @@ public enum ProjectFile {
 
     private static let manifestName = "manifest.json"
     private static let previewName = "preview.png"
-    private static let currentVersion = 1
+    /// Version 2 added badges, spotlights, shadows and speech bubbles; version 1 projects still open.
+    private static let currentVersion = 2
 
     private struct Manifest: Codable {
         var version: Int

@@ -13,6 +13,8 @@ final class FrameInteraction {
         case rotate
         /// An end of a line or arrow.
         case endpoint(Int)
+        /// The tip of a speech bubble's tail.
+        case tail
     }
 
     private enum Drag {
@@ -20,6 +22,7 @@ final class FrameInteraction {
         case scale(Handle, original: Layer)
         case rotate(original: Layer, center: CGPoint, startAngle: CGFloat)
         case endpoint(Int, original: Layer)
+        case tail(original: Layer)
     }
 
     private unowned let editor: EditorController
@@ -63,6 +66,7 @@ final class FrameInteraction {
         let outward = mids[0] - center
         let length = max(outward.length, 0.0001)
         result.append((.rotate, mids[0] + outward * (26 / max(canvas.scale, 0.0001) / length)))
+        if let tail = layer.text?.tail { result.append((.tail, tail.applying(layer.transform))) }
         return result
     }
 
@@ -77,10 +81,12 @@ final class FrameInteraction {
         guard let layer = document.activeLayer, let handle = handle(at: point) else { return false }
         switch handle {
         case .rotate:
-            let center = layer.localBounds.center.applying(layer.transform)
+            let center = layer.frameBounds.center.applying(layer.transform)
             drag = .rotate(original: layer, center: center, startAngle: atan2(point.y - center.y, point.x - center.x))
         case .endpoint(let index):
             drag = .endpoint(index, original: layer)
+        case .tail:
+            drag = .tail(original: layer)
         default:
             drag = .scale(handle, original: layer)
         }
@@ -114,7 +120,7 @@ final class FrameInteraction {
             layer = original
             name = "Resize"
             guard abs(original.transform.a * original.transform.d - original.transform.b * original.transform.c) > 1e-9 else { return }
-            let box = original.localBounds
+            let box = original.frameBounds
             let local = point.applying(original.transform.inverted())
             var grip: CGPoint, anchor: CGPoint
             var scalesX = true, scalesY = true
@@ -144,7 +150,7 @@ final class FrameInteraction {
             if scalesY, abs(grip.y - anchor.y) > 1e-6 { sy = max((local.y - anchor.y) / (grip.y - anchor.y), 0.01) }
             if case .corner = handle {
                 // Pictures and text keep their proportions unless Shift is held; shapes and areas do the opposite.
-                let proportionalByDefault = original.isRaster || original.text != nil
+                let proportionalByDefault = original.isRaster || original.text != nil || original.shape?.kind == .badge
                 if proportionalByDefault != shift {
                     let uniform = max(sx, sy)
                     sx = uniform
@@ -174,6 +180,15 @@ final class FrameInteraction {
             }
             shape.points[index] = target.applying(original.transform.inverted())
             layer.content = .shape(shape)
+
+        case .tail(let original):
+            layer = original
+            name = "Move Tail"
+            guard var text = original.text,
+                  abs(original.transform.a * original.transform.d - original.transform.b * original.transform.c) > 1e-9
+            else { return }
+            text.tail = point.applying(original.transform.inverted())
+            layer.content = .text(text)
         }
         let updated = layer
         document.updateLayer(layer.id, name: name, key: "frame") { $0 = updated }
@@ -241,7 +256,7 @@ final class FrameInteraction {
         for (handle, position) in positions {
             let rect = CGRect(x: position.x - 4.5, y: position.y - 4.5, width: 9, height: 9)
             switch handle {
-            case .rotate, .endpoint:
+            case .rotate, .endpoint, .tail:
                 context.fillEllipse(in: rect.insetBy(dx: -1, dy: -1))
                 context.strokeEllipse(in: rect.insetBy(dx: -1, dy: -1))
             default:

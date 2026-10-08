@@ -12,6 +12,11 @@ public struct DocumentState {
     public var selection: Selection?
 }
 
+/// A side of the canvas that can grow to take another picture.
+public enum CanvasEdge: Sendable {
+    case bottom, right
+}
+
 public enum DocumentChange {
     /// Pixels inside the rectangle changed; nothing else did.
     case pixels(CGRect)
@@ -73,6 +78,13 @@ public final class Document {
 
     public func flattenedImage() -> CGImage? {
         renderer.makeImage(renderer.composite(state, colorSpace: colorSpace), size: state.size, colorSpace: colorSpace)
+    }
+
+    /// The whole picture, or one layer as it sits in the picture, as an image the size of the canvas.
+    public func image(ofLayer id: LayerID? = nil) -> CGImage? {
+        renderer.makeImage(
+            renderer.composite(state, colorSpace: colorSpace, only: id.map { [$0] }), size: state.size, colorSpace: colorSpace
+        )
     }
 
     /// Premultiplied BGRA bytes of the whole picture or of one layer, as seen in the document.
@@ -184,6 +196,55 @@ public final class Document {
         ))
         addLayer(layer, name: "Add Image")
         return layer.id
+    }
+
+    /// Makes the canvas longer on one side and puts a picture into the new room, scaled to span that side.
+    /// This is how one picture goes under or beside another without dragging anything.
+    @discardableResult
+    public func appendImage(_ image: CGImage, name: String, to edge: CanvasEdge) -> LayerID? {
+        guard size.width > 0, size.height > 0, let buffer = PixelBuffer(image: image, colorSpace: colorSpace) else { return nil }
+        var placed: CGRect
+        switch edge {
+        case .bottom:
+            let height = max((buffer.size.height * size.width / buffer.size.width).rounded(), 1)
+            placed = CGRect(x: 0, y: size.height, width: size.width, height: height)
+        case .right:
+            let width = max((buffer.size.width * size.height / buffer.size.height).rounded(), 1)
+            placed = CGRect(x: size.width, y: 0, width: width, height: size.height)
+        }
+        let newSize = CGSize(width: placed.maxX, height: placed.maxY)
+        guard max(newSize.width, newSize.height) <= CGFloat(PixelBuffer.maxDimension) else { return nil }
+        var layer = Layer(name: name, content: .raster(buffer))
+        layer.transform = CGAffineTransform(scaleX: placed.width / buffer.size.width, y: placed.height / buffer.size.height)
+            .concatenating(CGAffineTransform(translationX: placed.minX, y: placed.minY))
+        mutate(edge == .bottom ? "Add Image Below" : "Add Image to the Right") { state in
+            state.size = newSize
+            state.layers.append(layer)
+            state.activeLayerID = layer.id
+            state.selection = nil
+        }
+        return layer.id
+    }
+
+    /// The next free number for a badge: one more than the largest number among the badges already there.
+    public var nextBadgeNumber: Int {
+        (state.layers.compactMap { $0.shape?.kind == .badge ? Int($0.shape?.label ?? "") : nil }.max() ?? 0) + 1
+    }
+
+    /// A small picture of one layer on its own, at most `maxPixel` on the longer side.
+    public func thumbnail(ofLayer id: LayerID, maxPixel: Int) -> CGImage? {
+        guard var layer = layer(id), layer.effectRegion == nil, size.width > 0, size.height > 0 else { return nil }
+        // Hidden and faint layers still get a picture.
+        layer.isVisible = true
+        layer.opacity = 1
+        layer.blendMode = .normal
+        var alone = state
+        alone.layers = [layer]
+        let scale = min(1, CGFloat(maxPixel) / max(size.width, size.height))
+        let target = CGSize(width: max((size.width * scale).rounded(), 1), height: max((size.height * scale).rounded(), 1))
+        let image = renderer.composite(alone, colorSpace: colorSpace)
+            .transformed(by: CGAffineTransform(scaleX: target.width / size.width, y: target.height / size.height))
+        return renderer.makeImage(image, size: target, colorSpace: colorSpace)
     }
 
     public func removeLayer(_ id: LayerID) {
@@ -422,6 +483,19 @@ public final class Document {
         guard let result = renderer.makeBuffer(image, size: buffer.size, colorSpace: colorSpace) else { return }
         preview = nil
         mutate(effect.name) { $0.layers[index].content = .raster(result) }
+    }
+
+    /// Makes a raster layer transparent everywhere outside the selection, as one undo step.
+    public func eraseOutside(_ selection: Selection, layer id: LayerID, name: String) {
+        guard let index = state.layers.firstIndex(where: { $0.id == id }), !state.layers[index].isLocked,
+              let buffer = state.layers[index].buffer, selection.width == Int(size.width), selection.height == Int(size.height)
+        else { return }
+        let image = renderer.maskedImage(selection, buffer: buffer, layer: state.layers[index], state: state)
+        guard let result = renderer.makeBuffer(image, size: buffer.size, colorSpace: colorSpace) else { return }
+        mutate(name) { state in
+            state.layers[index].content = .raster(result)
+            state.selection = nil
+        }
     }
 
     /// Bakes the layer's sliders and filter into its pixels and resets them.

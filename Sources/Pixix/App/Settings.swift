@@ -50,6 +50,30 @@ final class Settings {
         set { defaults.set(newValue, forKey: "wrapAround") }
     }
 
+    /// A picture opened while another is on screen gets a window of its own instead of replacing it.
+    var opensNewWindows: Bool {
+        get { defaults.object(forKey: "opensNewWindows") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "opensNewWindows") }
+    }
+
+    /// Text in pictures can be selected and copied.
+    var liveText: Bool {
+        get { defaults.object(forKey: "liveText") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "liveText") }
+    }
+
+    /// The first Save of an editing session moves the file as it was to the Trash.
+    var keepsOriginalInTrash: Bool {
+        get { defaults.object(forKey: "keepsOriginalInTrash") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "keepsOriginalInTrash") }
+    }
+
+    /// Where Copy to Folder and Move to Folder went last.
+    var lastDestinationFolder: URL? {
+        get { defaults.string(forKey: "lastDestinationFolder").map { URL(fileURLWithPath: $0, isDirectory: true) } }
+        set { defaults.set(newValue?.path(percentEncoded: false), forKey: "lastDestinationFolder") }
+    }
+
     var showsFilmstrip: Bool {
         get { defaults.bool(forKey: "showsFilmstrip") }
         set { defaults.set(newValue, forKey: "showsFilmstrip") }

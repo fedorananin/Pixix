@@ -169,10 +169,13 @@ extension ViewerWindowController {
                 let result = try await Task.detached(priority: .userInitiated) {
                     try ImageEncoder.export(.image(image, properties: properties.value), settings: settings)
                 }.value
-                try FileWriter.write(result.data, to: url)
+                // The first Save of a session is the one that destroys something: the file as it was.
+                let keepsOriginal = Settings.shared.keepsOriginalInTrash && self.editor?.fileIsUntouched == true
+                let trashed = try FileWriter.replace(url, with: result.data, trashingOriginal: keepsOriginal)
                 ImageLoader.shared.invalidate(url)
                 self.editor?.markSaved(url: url)
-                self.showToast("Saved \(url.lastPathComponent) · \(Self.byteText(result.data.count))")
+                let note = trashed != nil ? " · the original is in the Trash" : ""
+                self.showToast("Saved \(url.lastPathComponent) · \(Self.byteText(result.data.count))\(note)")
                 self.updateTitle()
             } catch {
                 self.present(error)

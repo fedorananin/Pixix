@@ -85,6 +85,15 @@ final class FolderBrowser {
         onChange?(select)
     }
 
+    /// Follows a file to its new name. The picture on screen is the same one, so this is not a change of file.
+    func replace(_ old: URL, with new: URL) {
+        guard let position = files.firstIndex(of: old) else { return }
+        let wasCurrent = position == index
+        files[position] = new
+        sortKeepingCurrent(preferred: wasCurrent ? new : current)
+        onChange?(false)
+    }
+
     private func sortKeepingCurrent(preferred: URL?) {
         guard followsFolder else {
             if let preferred, let position = files.firstIndex(of: preferred) { index = position }

@@ -293,6 +293,39 @@ public enum FileWriter {
         try data.write(to: url, options: .atomic)
     }
 
+    /// Overwrites a file and leaves what it held in the Trash, where "Put Back" restores it.
+    /// The new contents are fully on disk before the old file moves, so a failure never loses either.
+    /// Returns where the old file went, or nil when there was none or the volume has no Trash.
+    @discardableResult
+    public static func replace(_ url: URL, with data: Data, trashingOriginal: Bool) throws -> URL? {
+        let files = FileManager.default
+        guard trashingOriginal, files.fileExists(atPath: url.path(percentEncoded: false)) else {
+            try write(data, to: url)
+            return nil
+        }
+        // Hidden, so a folder being browsed does not show it for the moment it exists.
+        let staged = url.deletingLastPathComponent()
+            .appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString.prefix(8)).saving")
+        try data.write(to: staged)
+        var trashed: NSURL?
+        do {
+            try files.trashItem(at: url, resultingItemURL: &trashed)
+        } catch {
+            // No Trash here (some network and external volumes): fall back to a plain replace.
+            defer { try? files.removeItem(at: staged) }
+            _ = try files.replaceItemAt(url, withItemAt: staged)
+            return nil
+        }
+        do {
+            try files.moveItem(at: staged, to: url)
+        } catch {
+            if let trashed { try? files.moveItem(at: trashed as URL, to: url) }
+            try? files.removeItem(at: staged)
+            throw error
+        }
+        return trashed as URL?
+    }
+
     /// A free name next to `url`: "photo.jpg" becomes "photo 2.jpg" and so on. Optionally swaps the extension.
     public static func uniqueURL(near url: URL, suffix: String = "", fileExtension: String? = nil) -> URL {
         let folder = url.deletingLastPathComponent()

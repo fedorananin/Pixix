@@ -65,6 +65,7 @@ enum MainMenu {
         recent.delegate = recentDelegate
         menu.addItem(submenu(recent))
         menu.addItem(item("New from Clipboard", #selector(AppDelegate.newFromClipboard(_:)), "n"))
+        menu.addItem(item("New Window", #selector(AppDelegate.newWindow(_:)), "n", [.command, .option]))
         menu.addItem(.separator())
         menu.addItem(item("Close", #selector(NSWindow.performClose(_:)), "w"))
         menu.addItem(item("Save", #selector(Controller.saveDocument(_:)), "s"))
@@ -75,6 +76,11 @@ enum MainMenu {
         menu.addItem(item("Export Again", #selector(Controller.exportAgain(_:)), "e"))
         menu.addItem(.separator())
         menu.addItem(item("Show in Finder", #selector(Controller.revealInFinder(_:)), "r", [.command, .shift]))
+        // F2 types nothing, so unlike a letter it is safe as a shortcut without modifiers.
+        menu.addItem(item("Rename…", #selector(Controller.renameFile(_:)), String(UnicodeScalar(NSF2FunctionKey)!), []))
+        menu.addItem(item("Duplicate", #selector(Controller.duplicateFile(_:)), "d", [.command, .shift]))
+        menu.addItem(item("Copy to Folder…", #selector(Controller.copyToFolder(_:)), "c", [.command, .control]))
+        menu.addItem(item("Move to Folder…", #selector(Controller.moveToFolder(_:)), "m", [.command, .control]))
         menu.addItem(item("Set as Wallpaper", #selector(Controller.setAsWallpaper(_:))))
         menu.addItem(item("Move to Trash", #selector(Controller.moveToTrash(_:)), "\u{8}"))
         menu.addItem(.separator())
@@ -97,6 +103,7 @@ enum MainMenu {
         menu.addItem(item("Select All", #selector(Controller.selectAll(_:)), "a"))
         menu.addItem(item("Deselect", #selector(Controller.deselect(_:)), "d"))
         menu.addItem(item("Invert Selection", #selector(Controller.invertSelection(_:)), "i", [.command, .shift]))
+        menu.addItem(item("Select Subject", #selector(Controller.selectSubject(_:)), "a", [.command, .shift]))
         return menu
     }
 
@@ -114,6 +121,7 @@ enum MainMenu {
         menu.addItem(.separator())
         menu.addItem(item("Show Info", #selector(Controller.showInfo(_:)), "i"))
         menu.addItem(item("Thumbnail Strip", #selector(Controller.toggleFilmstrip(_:)), "t", [.command, .option]))
+        menu.addItem(item("Live Text", #selector(Controller.toggleLiveText(_:)), "t", [.command, .shift]))
         menu.addItem(item("Start Slideshow", #selector(Controller.toggleSlideshow(_:)), "\r", [.command, .shift]))
         menu.addItem(item("Play or Pause Animation", #selector(Controller.togglePlayback(_:))))
         menu.addItem(.separator())
@@ -143,6 +151,8 @@ enum MainMenu {
         let menu = NSMenu(title: "Layer")
         menu.addItem(item("New Layer", #selector(Controller.newLayer(_:)), "n", [.command, .shift]))
         menu.addItem(item("Add Image as Layer…", #selector(Controller.addImageLayer(_:)), "o", [.command, .shift]))
+        menu.addItem(item("Add Image Below…", #selector(Controller.addImageBelow(_:)), "b", [.command, .option]))
+        menu.addItem(item("Add Image to the Right…", #selector(Controller.addImageToTheRight(_:))))
         menu.addItem(item("Duplicate Layer", #selector(Controller.duplicateLayer(_:)), "j"))
         menu.addItem(item("Delete Layer", #selector(Controller.deleteLayer(_:))))
         menu.addItem(.separator())
@@ -150,6 +160,7 @@ enum MainMenu {
         menu.addItem(item("Move Down", #selector(Controller.moveLayerDown(_:)), "[", [.command, .option]))
         menu.addItem(item("Merge Down", #selector(Controller.mergeDown(_:)), "m", [.command, .option]))
         menu.addItem(item("Rasterize", #selector(Controller.rasterizeLayer(_:))))
+        menu.addItem(item("Remove Background", #selector(Controller.removeBackground(_:))))
         return menu
     }
 

@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.2.0
+
+- **Several windows.** Each picture opened from Finder gets a window of its own, and `⌥⌘N` opens another
+  window on the same picture. Settings can go back to one shared window.
+- **Folders.** Opening a folder, or dropping one on the window, browses the pictures in it.
+- **Live Text.** Text in a picture can be selected and copied; `⇧⌘T` turns it off.
+- **File commands.** Rename (`F2`), Duplicate, Copy to Folder and Move to Folder, all undoable, and a
+  right-click menu on the picture.
+- **Info** shows a histogram, and a picture with a location gets an Open in Maps button.
+- **Typing on the canvas.** Text is typed where it stands instead of in the side panel.
+- **New markup.** Speech bubbles, numbered badges that count up by themselves, a spotlight that darkens
+  everything around an area, and shadows for text and shapes.
+- **Select Subject and Remove Background** find what the picture is of.
+- **Add Image Below** and **Add Image to the Right** extend the canvas and put a picture there in one step.
+- **Layers** can be renamed, reordered by dragging, and show a small picture of themselves.
+- **Straighten** shrinks the crop frame so that no corner is left empty.
+- **Save** leaves the file as it was in the Trash the first time it overwrites it in a session.
+
 ## 0.1.1
 
 - The side buttons of a mouse browse the folder: the first goes to the next image, the second to the previous one.

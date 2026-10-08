@@ -9,7 +9,7 @@ extension ViewerWindowController {
     /// When a sheet is open, the sheet is what gets saved.
     func writeSnapshot(to url: URL) {
         guard let window else { return }
-        let target = window.attachedSheet ?? window
+        let target = window.attachedSheet ?? infoWindow ?? window
         guard let view = target.contentView?.superview ?? target.contentView else { return }
         // Offscreen capture cannot see GPU surfaces, so show the same pixels as ordinary images for the shot.
         if let editor {
@@ -28,12 +28,138 @@ extension ViewerWindowController {
         try? bitmap.representation(using: .png, properties: [:])?.write(to: url)
     }
 
-    /// Scripted scenarios for snapshots.
-    func runDemoScript(_ name: String) {
-        if name == "mouse" {
+    /// Scripted scenarios for snapshots. `done` is called when the window is ready to be photographed.
+    ///
+    /// In the viewer: `mouse`, `windows`, `files`, `livetext`, `info`, `menu`.
+    /// With `--edit`: `meme`, `tools`, `markup`, `text`, `layers`, `append`, `subject`, `cutout`, `save`, `crop`,
+    /// `crop-applied`, `select`, `effect`, `export`, `menu`.
+    func runDemoScript(_ name: String, done: @escaping @MainActor () -> Void) {
+        switch name {
+        case "mouse":
             runMouseScript()
+        case "windows":
+            runWindowsScript()
+        case "files":
+            runFilesScript()
+        case "menu":
+            // What a right click offers, with the items that are switched off in brackets.
+            let menu = canvas(canvas, menuAt: .zero)
+            for item in menu?.items ?? [] {
+                if item.isSeparatorItem { print("--") } else { print(validateMenuItem(item) ? item.title : "[\(item.title)]") }
+            }
+        case "info":
+            showInfo(nil)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { done() }
+            return
+        case "livetext":
+            runLiveTextScript(done: done)
+            return
+        case "subject":
+            editor?.selectSubject()
+            wait(for: { [weak self] in self?.editor?.document.selection != nil }, then: done)
+            return
+        case "cutout":
+            editor?.removeBackground()
+            wait(for: { [weak self] in self?.editor?.document.history.undoName == "Remove Background" }, then: done)
+            return
+        case "save":
+            // Changes the file it is given: run it on a scratch copy.
+            editor?.flipCanvas(horizontal: true)
+            saveDocument(nil)
+            wait(for: { [weak self] in self?.editor?.isDirty == false }, then: done)
+            return
+        default:
+            runEditorScript(name)
+        }
+        done()
+    }
+
+    /// Calls `done` once the condition holds, or after ten seconds if it never does.
+    private func wait(for condition: @escaping @MainActor () -> Bool, attempts: Int = 0, then done: @escaping @MainActor () -> Void) {
+        if condition() || attempts >= 100 {
+            if attempts >= 100 { print("gave up waiting") }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { done() }
             return
         }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            self?.wait(for: condition, attempts: attempts + 1, then: done)
+        }
+    }
+
+    /// Opens the next picture the way Finder would, and prints which windows there are and where.
+    private func runWindowsScript() {
+        guard let app = NSApp.delegate as? AppDelegate, let browser, let next = browser.neighbor(offset: 1, wrap: true) else { return }
+        func report(_ label: String) {
+            let windows = NSApp.windows.compactMap { $0.windowController as? ViewerWindowController }
+            let lines = windows.map { controller -> String in
+                let frame = controller.window?.frame ?? .zero
+                return "\(controller.currentURL?.lastPathComponent ?? "-") at \(Int(frame.minX)),\(Int(frame.maxY)) \(Int(frame.width))×\(Int(frame.height))"
+            }
+            print("\(label): \(windows.count) window(s): \(lines.joined(separator: "; "))")
+        }
+        report("start")
+        app.open([next])
+        report("opened the next file")
+        app.open([next])
+        report("opened it again")
+        Settings.shared.opensNewWindows = false
+        if let third = browser.neighbor(offset: 2, wrap: true) { app.open([third]) }
+        report("with one window per picture switched off")
+        Settings.shared.opensNewWindows = true
+        app.newWindow(nil)
+        report("File › New Window")
+    }
+
+    /// Renames, duplicates, copies and moves the file on screen and undoes it all, printing the folder each time.
+    /// Run it on a scratch copy: it changes files.
+    private func runFilesScript() {
+        guard let url = currentURL else { return }
+        let folder = url.deletingLastPathComponent()
+        func report(_ label: String) {
+            let onDisk = ((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []).filter { !$0.hasPrefix(".") }.sorted()
+            print("\(label): showing \(currentURL?.lastPathComponent ?? "-"), list \(browser?.files.map(\.lastPathComponent) ?? []), disk \(onDisk)")
+        }
+        report("start")
+        let renamed = rename(url, to: "renamed picture")
+        report("rename")
+        if let renamed { rename(renamed, to: "RENAMED picture." + renamed.pathExtension) }
+        report("rename, case only and with the extension typed")
+        duplicateFile(nil)
+        report("duplicate")
+        let sub = folder.appendingPathComponent("sorted", isDirectory: true)
+        try? FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
+        if let current = currentURL { transfer(current, to: sub, moving: false) }
+        report("copy to folder")
+        if let current = currentURL { transfer(current, to: sub, moving: true) }
+        report("move to folder")
+        print("sorted: \(((try? FileManager.default.contentsOfDirectory(atPath: sub.path)) ?? []).sorted())")
+        for step in 1...4 {
+            guard window?.undoManager?.canUndo == true else { break }
+            let name = window?.undoManager?.undoActionName ?? ""
+            window?.undoManager?.undo()
+            report("undo \(step) (\(name))")
+        }
+    }
+
+    /// Waits for the text in the picture to be recognized, prints it and marks where it is.
+    private func runLiveTextScript(done: @escaping @MainActor () -> Void, attempts: Int = 0) {
+        guard let liveText, liveText.isReady else {
+            guard attempts < 100 else {
+                print("live text: nothing recognized")
+                done()
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                self?.runLiveTextScript(done: done, attempts: attempts + 1)
+            }
+            return
+        }
+        print("live text: \(liveText.transcript.replacingOccurrences(of: "\n", with: " | "))")
+        liveText.highlightAll(true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { done() }
+    }
+
+    private func runEditorScript(_ name: String) {
         guard let editor else { return }
         let document = editor.document
         let size = document.size
@@ -49,6 +175,56 @@ extension ViewerWindowController {
             editor.applyCrop()
         case "tools":
             runToolsScript()
+        case "markup":
+            runMarkupScript()
+        case "text":
+            // Click with the text tool and type, the way a person would.
+            editor.model.tool = .text
+            editor.model.textDefaults.fontSize = Double(size.height / 9)
+            let press = NSEvent.mouseEvent(
+                with: .leftMouseDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+                eventNumber: 0, clickCount: 1, pressure: 1
+            )!
+            editor.toolMouseDown(at: CGPoint(x: size.width * 0.5, y: size.height * 0.4), event: press)
+            editor.toolMouseUp(at: CGPoint(x: size.width * 0.5, y: size.height * 0.4), event: press)
+            // The last word ends up selected, so the picture shows where the selection is drawn.
+            editor.typeText("Typed on\nthe canva")
+            // The last letter comes in as a key press, by the road a real keyboard takes.
+            if let key = NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window?.windowNumber ?? 0,
+                context: nil, characters: "s", charactersIgnoringModifiers: "s", isARepeat: false, keyCode: 1
+            ) {
+                window?.sendEvent(key)
+            }
+            editor.typeText("", selecting: NSRange(location: 13, length: 6))
+            print("text: \(document.activeLayer?.text?.string.replacingOccurrences(of: "\n", with: " | ") ?? "-"), history \(document.history.entries.map(\.name))")
+        case "layers":
+            if let source = document.layers.first?.buffer?.makeImage(), let small = Resampler.resize(source, longEdge: Int(max(size.width, size.height) / 3)) {
+                let id = document.addImageLayer(small, name: "Photo", center: CGPoint(x: size.width * 0.7, y: size.height * 0.3))
+                if let id { document.updateLayer(id, name: "Rename Layer") { $0.name = "Inset picture" } }
+            }
+            document.addEmptyLayer()
+            var text = TextContent()
+            text.string = "Caption"
+            text.fontSize = Double(size.height / 12)
+            var caption = Layer(name: "Text", content: .text(text))
+            caption.transform = CGAffineTransform(translationX: size.width * 0.1, y: size.height * 0.75)
+            document.addLayer(caption)
+            // Drag and drop cannot be scripted; this is the call a drop makes.
+            document.moveLayer(caption.id, toIndex: 1)
+            print("layers, bottom first: \(document.layers.map(\.name))")
+            editor.model.tool = .move
+            editor.model.expandedSections = ["layers"]
+            if let photo = document.layers.first(where: { $0.name == "Inset picture" }) {
+                editor.model.layerNameDraft = photo.name
+                editor.model.renamingLayer = photo.id
+            }
+        case "append":
+            if let url = currentURL {
+                editor.appendImages(from: [url], to: .bottom)
+                editor.appendImages(from: [url], to: .right)
+            }
+            print("append: canvas \(Int(document.size.width))×\(Int(document.size.height)), layers \(document.layers.map(\.name))")
         case "select":
             editor.model.tool = .selectEllipse
             document.setSelection(Selection.ellipse(
@@ -103,6 +279,68 @@ extension ViewerWindowController {
         document.setActiveLayer(caption.id)
         editor.model.tool = .move
         canvas.fit()
+    }
+
+    /// Numbered badges, a speech bubble, a spotlight and a shadow, each made the way the tools make them.
+    private func runMarkupScript() {
+        guard let editor else { return }
+        let document = editor.document
+        let model = editor.model
+        let w = document.size.width, h = document.size.height
+        func event(_ type: NSEvent.EventType) -> NSEvent {
+            NSEvent.mouseEvent(
+                with: type, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+                eventNumber: 0, clickCount: 1, pressure: 1
+            )!
+        }
+        func drag(_ a: CGPoint, _ b: CGPoint) {
+            editor.toolMouseDown(at: a, event: event(.leftMouseDown))
+            editor.toolMouseDragged(to: CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2), event: event(.leftMouseDragged))
+            editor.toolMouseDragged(to: b, event: event(.leftMouseDragged))
+            editor.toolMouseUp(at: b, event: event(.leftMouseUp))
+        }
+
+        model.tool = .spotlightRegion
+        drag(CGPoint(x: w * 0.08, y: h * 0.1), CGPoint(x: w * 0.45, y: h * 0.5))
+        drag(CGPoint(x: w * 0.6, y: h * 0.6), CGPoint(x: w * 0.9, y: h * 0.9))
+        if let id = document.activeLayerID {
+            document.updateLayer(id, name: "Shape") { layer in
+                guard var region = layer.effectRegion else { return }
+                region.isEllipse = true
+                layer.content = .effect(region)
+            }
+        }
+
+        model.tool = .badge
+        for spot in [CGPoint(x: w * 0.12, y: h * 0.16), CGPoint(x: w * 0.3, y: h * 0.16), CGPoint(x: w * 0.66, y: h * 0.66)] {
+            drag(spot, spot)
+        }
+        model.primaryColor = RGBAColor(red: 1, green: 0.8, blue: 0)
+        // Pulled out by hand, so larger than the rest.
+        drag(CGPoint(x: w * 0.82, y: h * 0.2), CGPoint(x: w * 0.82 + w * 0.05, y: h * 0.2))
+        model.primaryColor = RGBAColor(red: 0.9, green: 0.16, blue: 0.13)
+
+        model.textDefaults.fontSize = Double(h / 16)
+        model.tool = .callout
+        drag(CGPoint(x: w * 0.3, y: h * 0.42), CGPoint(x: w * 0.62, y: h * 0.3))
+        editor.typeText("Look here")
+
+        model.tool = .rectangle
+        model.strokeWidth = Double(w / 120)
+        drag(CGPoint(x: w * 0.1, y: h * 0.62), CGPoint(x: w * 0.4, y: h * 0.88))
+        if let id = document.activeLayerID {
+            document.updateLayer(id, name: "Shadow") { layer in
+                guard var shape = layer.shape else { return }
+                shape.shadow = Double(w / 60)
+                shape.fillColor = .white
+                layer.content = .shape(shape)
+            }
+        }
+        print("markup: \(document.layers.map(\.name))")
+        print("badges: \(document.layers.compactMap { $0.shape?.label })")
+        if let bubble = document.layers.first(where: { $0.text?.tail != nil }) { document.setActiveLayer(bubble.id) }
+        model.tool = .callout
+        model.expandedSections = ["layer", "layers"]
     }
 
     /// Turns a mouse wheel over the picture, over the background and sideways, presses the side buttons, and

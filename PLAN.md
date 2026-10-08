@@ -39,6 +39,7 @@ Non-goals: photo catalog or library, cloud, RAW development, plugins, App Store,
 - **Decoding and encoding:** ImageIO.
 - **Rendering and effects:** Core Image on Metal, rendered into IOSurfaces that Core Animation displays directly. It provides about 200 ready filters, blend modes and GPU speed. Color management is switched off inside the renderer: pixel values pass through unchanged and the document's color space is attached on output, so blending happens on gamma-encoded values as in Paint.NET.
 - **Text and shapes:** Core Text and Core Graphics.
+- **Recognition:** Vision for the subject of a picture and VisionKit for Live Text. Both are system frameworks and both run only when asked for, never on the way to the first frame.
 - **The only third-party dependency:** libwebp, sources as a SwiftPM C target. Used only to write WebP, still and animated.
 - **Build:** SwiftPM plus `Scripts/build-app.sh`, which assembles `Pixix.app`, adds `Info.plist` and the icon, and signs with the `Local Dev` certificate. The icon is drawn by `Scripts/make-icon.swift`.
 - **Tests:** Swift Testing for everything that is not UI.
@@ -88,9 +89,9 @@ Scripts/          build-app.sh, run.sh, make-icon.swift
 
 ## 6. Viewer
 
-**Window.** One window, dark background, image centered. Arrows overlaid on the left and right appear when the mouse moves. Top bar: Edit, Rotate, Delete, Info, Export, Share. Bottom: zoom out, zoom in, Fit, 1:1.
+**Window.** Dark background, image centered. Each picture opened from Finder gets a window of its own, a step down and to the right of the last one; opening what is already on screen brings that window forward, and a setting makes pictures share one window instead. `⌥⌘N` opens another window on the same picture. Arrows overlaid on the left and right appear when the mouse moves. Top bar: Edit, Rotate, Delete, Info, Export, Share. Bottom: zoom out, zoom in, Fit, 1:1.
 
-**File list.** Every supported image in the folder of the opened file, sorted by name the way Finder does (`localizedStandardCompare`); sorting by date is a setting. If several files are opened from Finder at once, only those are browsed. The folder is watched, so added and removed files are picked up.
+**File list.** Every supported image in the folder of the opened file, sorted by name the way Finder does (`localizedStandardCompare`); sorting by date is a setting. If several files are opened from Finder at once, only those are browsed. Opening or dropping a folder browses the pictures in it. The folder is watched, so added and removed files are picked up.
 
 **Navigation.**
 
@@ -111,7 +112,9 @@ One notch of the wheel is one fixed step, whatever the speed of the wheel: the l
 
 **Animation.** GIF, APNG, animated WebP, HEIC and AVIF play with their native delays. `Space` pauses, `,` and `.` step frame by frame. Frames are decoded ahead in a ring buffer rather than all at once, so a long GIF does not eat memory.
 
-**File actions.** Rotation without re-encoding where the format allows it (the orientation tag is changed). Delete to Trash with `⌘⌫` and `Delete`, undoable. Copy image with `⌘C`. Info with `⌘I`: dimensions, file size, format, date, camera, color profile. Show in Finder, Set as Wallpaper, Print.
+**File actions.** Rotation without re-encoding where the format allows it (the orientation tag is changed). Delete to Trash with `⌘⌫` and `Delete`, rename with `F2`, duplicate, copy to a folder and move to a folder; all of them can be undone, and the folder last used is offered again, which is what sorting a shoot needs. Copy image with `⌘C`. Info with `⌘I`: a histogram, dimensions, file size, format, date, camera, color profile, and the coordinates with a button that opens the place in Maps. Show in Finder, Set as Wallpaper, Print. A right click on the picture brings up the same commands.
+
+**Live Text.** Text in a picture can be selected with the mouse and copied; links, addresses and QR codes in it work as they do in Preview. Recognition and the selection are the system's (VisionKit). It starts a moment after a picture has settled at full size, never before the first frame, and is cancelled when flipping on. Clicks that are not on text go to the picture as before. `⇧⌘T` turns it off.
 
 **Default app.** `Info.plist` declares the image types. Installing with `build-app.sh --install` makes Pixix the default for every type it reads, through `NSWorkspace.setDefaultApplication`; Settings has the same as a button. The apps displaced are saved, and one command or button hands the types back. That direction is not silent: macOS asks for confirmation once per file type.
 
@@ -143,7 +146,8 @@ The Edit button turns the viewer window into the editor: a tool strip on the lef
 - **Resize:** proportional or stretched.
 - **Adjust:** brightness, exposure, contrast, highlights, shadows, saturation, vibrance, temperature, tint, sharpness, vignette.
 - **Filters:** presets of the same parameters.
-- **Markup:** arrow, line, rectangle, ellipse, text, pen, highlighter, blur region, pixelate region.
+- **Markup:** arrow, line, rectangle, ellipse, text, speech bubble, numbered badge, pen, highlighter, blur region, pixelate region, spotlight. Text and shapes can cast a shadow. Each click of the badge tool adds the next number. A speech bubble is text with a filled box and a tail whose tip has a handle of its own. A spotlight leaves its area alone and darkens the rest; several spotlights are applied together, so one does not darken another.
+- **Typing on the canvas.** Text is typed where it stands. The letters are drawn by the document as always; the keyboard goes to a text view nobody sees, which brings input methods, word movement and the clipboard, and its text and selection are mirrored onto the layer, where the caret and the selection are drawn from the same Core Text layout that draws the letters.
 
 ### 8.2. Document model
 
@@ -151,9 +155,9 @@ The Edit button turns the viewer window into the editor: a tool strip on the lef
 - **Layers:**
   - raster — premultiplied BGRA pixels in one IOSurface per layer, shared by Core Graphics (painting on the CPU) and Core Image (compositing on the GPU);
   - object — text, shape, arrow; stays editable until explicitly rasterized;
-  - effect region — blurs or pixelates everything beneath it; also stays an object and can be moved.
+  - effect region — blurs or pixelates everything beneath it, or as a spotlight darkens everything around it; also stays an object and can be moved.
 - **Every layer has:** an affine transform into document space, opacity, blend mode, visibility, lock, adjustment sliders and a filter preset. Because placement is a transform, crop, resize, rotate, flip and canvas size only rewrite transforms and never resample pixels. A layer is baked to canvas-sized pixels the first time it is painted on.
-- **Selection:** a mask. Rectangle, ellipse, lasso, magic wand; add, subtract, intersect; feather. Tools and effects act within the selection.
+- **Selection:** a mask. Rectangle, ellipse, lasso, magic wand; add, subtract, intersect; feather. Tools and effects act within the selection. Select Subject fills the mask with what the picture is of, found by the system (Vision); Remove Background keeps only that part of a layer.
 - **History:** a list of operations with a panel, as in Paint.NET. The document state is a value whose copies share pixel storage, so most operations are recorded as a pair of states. Brush strokes and fills, which change pixels in place, store the changed rectangle before and after, compressed. Consecutive changes from one slider or handle drag merge into one step. The list is capped at 300 steps and 3 GB; the oldest steps are dropped.
 
 This is a deliberate improvement over Paint.NET, where text and shapes turn into pixels as soon as they are committed.
@@ -165,7 +169,7 @@ Layers are assembled into a Core Image chain and rendered into a document-sized 
 ### 8.4. Paint.NET parity
 
 **First tier — the editor is not useful without these:**
-- layers: add, delete, duplicate, merge down, flatten, reorder, opacity, blend modes, properties;
+- layers: add, delete, duplicate, merge down, flatten, reorder by buttons or by dragging, rename, opacity, blend modes, properties; the list shows a small picture of every raster layer;
 - move and transform with a frame and handles;
 - selection: rectangle, ellipse, lasso, magic wand; crop to selection;
 - canvas size with anchor, image size, rotate, flip;
@@ -197,6 +201,7 @@ Save As and Export open the same dialog. Save As starts from the original format
 Details of Save:
 
 - The write is atomic: a temporary file next to the original, then a replace. A failed save never leaves a half-written original.
+- The first Save of an editing session moves the file as it was to the Trash, where Put Back restores it; later Saves of the same session replace the session's own work and keep nothing. A setting turns this off. On a volume without a Trash the file is simply replaced.
 - A document with layers or objects is flattened into the file. The session keeps its layers and history, so editing continues; once the window closes, only the flattened image remains. To keep layers, use Save as Pixix Project.
 - Lossy formats are re-encoded at high quality. Metadata and the color profile are preserved.
 - If the original is in a format that cannot be written (JPEG XL, RAW, PSD) or is an animation, Save opens Save As instead.
@@ -216,6 +221,8 @@ Details of Save:
 
 The scenario must work without the layers panel and without reading any help. This is the completion criterion for phase 4.
 
+Steps 2–4 also exist as one command: Layer › Add Image Below (`⌥⌘B`) extends the canvas and puts the chosen picture there, scaled to the width of the canvas. Add Image to the Right does the same sideways.
+
 ## 9. Phases
 
 Every phase ends with an app that can be used.
@@ -230,7 +237,7 @@ Every phase ends with an app that can be used.
 | 5. Raster editor | Selections, brushes, fill, gradient, clone stamp, blend modes, history panel, adjustment and effect menus | The first tier of 8.4 is covered, then the second | Done, except the items in section 12 |
 | 6. Polish | Settings, thumbnail strip, slideshow, batch conversion, printing, `.pixix` previews in Finder, images above 100 MP | — | Settings, thumbnail strip, slideshow and printing done; the rest is not |
 
-"Done" means built and checked by the unit tests and by scripted screenshots of the running app (see AGENTS.md). Gesture feel — swipe thresholds, pinch, the hand on a real trackpad — has not been tried by a person yet.
+"Done" means built and checked by the unit tests and by scripted screenshots of the running app (see AGENTS.md). In 0.2.0 the viewer gained several windows, folders, file operations, a context menu, Live Text and the histogram, and the editor gained typing on the canvas, speech bubbles, badges, spotlights, shadows, Select Subject, Add Image Below and a straightened crop frame that shrinks to fit: a tilted frame is made smaller about its center until no corner is empty, unless it was pulled past the picture on purpose. Gesture feel — swipe thresholds, pinch, the hand on a real trackpad — has not been tried by a person yet.
 
 Phases 0–2 remove the main pain. Phases 3–4 solve the meme task. Phase 5 is the largest and can be stretched out.
 
@@ -239,7 +246,7 @@ Phases 0–2 remove the main pain. Phases 3–4 solve the meme task. Phase 5 is 
 - **Gestures.** Separating the browsing swipe from the two-finger pan will take threshold tuning on a real trackpad.
 - **Very large images.** The viewer shows anything macOS can decode. The editor refuses pictures above 16384 px on a side, and every raster layer costs width × height × 4 bytes, so a 100 MP document with several layers is heavy. Tiled storage would lift both limits.
 - **Editing animation.** Frame-by-frame drawing on an animation is not planned: only resizing and conversion of all frames. Entering the editor takes the frame being shown, and Save then becomes Save As so the animation is not overwritten by a still.
-- **Overwriting on Save.** `⌘S` replaces the original with no confirmation, and for JPEG that means a lossy re-encode. Mitigations are the atomic write and undo within the session; there is no backup copy.
+- **Overwriting on Save.** `⌘S` replaces the original with no confirmation, and for JPEG that means a lossy re-encode. Mitigations are the atomic write, undo within the session, and the original left in the Trash by the first Save.
 - **File order.** The sort order of a specific Finder window cannot be read without a separate permission to control Finder. We sort by name; Settings offers date and size.
 - **Folder access.** On first access to Downloads, Documents, Desktop and cloud folders, macOS asks for permission — once per folder.
 - **No Xcode** means no Instruments and no graphical debugger. Launch timing is measured with the `--timing` switch and `PIXIX_TRACE`, the interface is checked with scripted screenshots, debugging goes through `lldb` in the terminal.
@@ -260,9 +267,9 @@ Phases 0–2 remove the main pain. Phases 3–4 solve the meme task. Phase 5 is 
 - **Tiled layer storage**, and with it images above 16384 px per side in the editor.
 - **Recolor tool, red-eye removal, rulers, grid and units** from the second tier of 8.4.
 - **A curves editor with a draggable curve.** Curves is five sliders.
-- **Typing directly on the canvas.** Text is typed in the inspector while the canvas shows it live.
 - **Moving a selection outline** without its pixels, and transforming a selection.
-- **Automatic shrinking of a straightened crop frame.** A tilted frame that reaches past the picture leaves transparent corners.
+- **Keeping the zoom while browsing**, to compare two shots at the same spot, and **HDR display** of pictures with a gain map. Both were considered and put off.
+- **Trying by hand** what the scripted screenshots cannot reach: reordering layers by dragging, typing through an input method, selecting Live Text with the mouse.
 - **Painting with pressure**, the `.pdn` format and plugins, as planned from the start.
 - **The "stay warm" mode** from section 4. The measured cold start made it unnecessary so far.
 

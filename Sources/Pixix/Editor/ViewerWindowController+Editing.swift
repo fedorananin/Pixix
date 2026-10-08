@@ -238,7 +238,14 @@ extension ViewerWindowController {
 
     @objc func cut(_ sender: Any?) { editor?.cut() }
     @objc func copyMerged(_ sender: Any?) { editor?.copySelection(merged: true) }
-    @objc func deleteSelection(_ sender: Any?) { editor?.deleteSelectionOrLayer() }
+    @objc func deleteSelection(_ sender: Any?) {
+        // While text is being typed on the canvas, Delete means the selected letters, not the layer.
+        if editor?.toolHoldsKeyboard == true {
+            NSApp.sendAction(#selector(NSText.delete(_:)), to: nil, from: sender)
+        } else {
+            editor?.deleteSelectionOrLayer()
+        }
+    }
     @objc override func selectAll(_ sender: Any?) { editor?.document.selectAll() }
     @objc func deselect(_ sender: Any?) { editor?.document.setSelection(nil) }
     @objc func invertSelection(_ sender: Any?) { editor?.document.invertSelection() }
@@ -260,6 +267,9 @@ extension ViewerWindowController {
             NSSound.beep()
         }
     }
+
+    @objc func selectSubject(_ sender: Any?) { editor?.selectSubject() }
+    @objc func removeBackground(_ sender: Any?) { editor?.removeBackground() }
 
     // MARK: Image menu
 
@@ -306,15 +316,34 @@ extension ViewerWindowController {
     }
 
     @objc func addImageLayer(_ sender: Any?) {
-        guard let window, editor != nil else { return }
+        choosePictures(message: "Choose pictures to add as layers") { [weak self] urls in
+            for url in urls { self?.editor?.addImageLayer(from: url) }
+        }
+    }
+
+    @objc func addImageBelow(_ sender: Any?) {
+        choosePictures(message: "Choose pictures to put under this one") { [weak self] urls in
+            self?.editor?.appendImages(from: urls, to: .bottom)
+        }
+    }
+
+    @objc func addImageToTheRight(_ sender: Any?) {
+        choosePictures(message: "Choose pictures to put to the right of this one") { [weak self] urls in
+            self?.editor?.appendImages(from: urls, to: .right)
+        }
+    }
+
+    private func choosePictures(message: String, then use: @escaping ([URL]) -> Void) {
+        guard let window, editor != nil, window.attachedSheet == nil else { return }
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.image]
         panel.allowsMultipleSelection = true
-        panel.message = "Choose pictures to add as layers"
+        panel.message = message
         panel.directoryURL = currentURL?.deletingLastPathComponent()
-        panel.beginSheetModal(for: window) { [weak self] response in
+        panel.beginSheetModal(for: window) { response in
             guard response == .OK else { return }
-            for url in panel.urls { self?.editor?.addImageLayer(from: url) }
+            // In the order Finder shows them, whatever order they were clicked in.
+            use(panel.urls.sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending })
         }
     }
 

@@ -180,3 +180,46 @@ func rotateFileSwapsDimensions(format: ImageFormat) throws {
     #expect(!ReadableTypes.isReadable(URL(fileURLWithPath: "/tmp/x.txt")))
     #expect(!ReadableTypes.isReadable(URL(fileURLWithPath: "/tmp/x.mp4")))
 }
+
+@Test func replaceKeepsTheOldFileInTheTrash() throws {
+    let folder = temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let url = folder.appendingPathComponent("photo.jpg")
+    // Nothing to keep the first time: the file is simply written.
+    #expect(try FileWriter.replace(url, with: Data([1, 2, 3]), trashingOriginal: true) == nil)
+    let trashed = try FileWriter.replace(url, with: Data([4, 5]), trashingOriginal: true)
+    defer { if let trashed { try? FileManager.default.removeItem(at: trashed) } }
+    #expect(try Data(contentsOf: url) == Data([4, 5]))
+    // The Trash exists for the user's own volumes; elsewhere the old contents are simply replaced.
+    if let trashed { #expect(try Data(contentsOf: trashed) == Data([1, 2, 3])) }
+    #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path) == ["photo.jpg"])
+    #expect(try FileWriter.replace(url, with: Data([6]), trashingOriginal: false) == nil)
+    #expect(try Data(contentsOf: url) == Data([6]))
+}
+
+@Test func histogramCountsTones() throws {
+    // Left half black, right half pure red.
+    let context = CGContext(
+        data: nil, width: 64, height: 32, bitsPerComponent: 8, bytesPerRow: 0,
+        space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    )!
+    context.setFillColor(RGBAColor.black.cgColor)
+    context.fill(CGRect(x: 0, y: 0, width: 32, height: 32))
+    context.setFillColor(RGBAColor(red: 1, green: 0, blue: 0).cgColor)
+    context.fill(CGRect(x: 32, y: 0, width: 32, height: 32))
+    let histogram = try #require(Histogram(image: context.makeImage()!))
+    #expect(histogram.red[0] == 1024 && histogram.red[255] == 1024)
+    #expect(histogram.green[0] == 2048 && histogram.blue[0] == 2048)
+    #expect(histogram.luminance[0] == 1024 && histogram.luminance[76] == 1024)
+    // Fully transparent pictures have nothing to count.
+    let empty = CGContext(
+        data: nil, width: 8, height: 8, bitsPerComponent: 8, bytesPerRow: 0,
+        space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    )!
+    #expect(Histogram(image: empty.makeImage()!)?.luminance.reduce(0, +) == 0)
+}
+
+@Test func coordinateLinksToMaps() {
+    let place = ImageDetails.Coordinate(latitude: -33.8568, longitude: 151.2153)
+    #expect(place.mapsURL?.absoluteString == "https://maps.apple.com/?ll=-33.856800,151.215300&q=-33.856800,151.215300")
+}

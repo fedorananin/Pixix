@@ -98,15 +98,27 @@ public final class Renderer {
         let extent = buffer.bounds
         var result = effect.apply(to: source, values: values, extent: extent)
         if let selection = state.selection {
-            // Bring the document-space mask into the layer's pixel space.
-            let toDocument = CGAffineTransform(translationX: 0, y: -extent.height)
-                .concatenating(documentTransform(layer, documentHeight: state.size.height))
-            let mask = selection.ciImage().transformed(by: toDocument.inverted())
             result = result.applyingFilter("CIBlendWithMask", parameters: [
-                kCIInputBackgroundImageKey: source, kCIInputMaskImageKey: mask,
+                kCIInputBackgroundImageKey: source,
+                kCIInputMaskImageKey: layerSpaceMask(selection, buffer: buffer, layer: layer, state: state),
             ]).cropped(to: extent)
         }
         return result
+    }
+
+    /// A document-space selection mask brought into the pixel space of a raster layer.
+    private func layerSpaceMask(_ selection: Selection, buffer: PixelBuffer, layer: Layer, state: DocumentState) -> CIImage {
+        let toDocument = CGAffineTransform(translationX: 0, y: -buffer.bounds.height)
+            .concatenating(documentTransform(layer, documentHeight: state.size.height))
+        return selection.ciImage().transformed(by: toDocument.inverted())
+    }
+
+    /// A raster layer's pixels with everything outside the selection made transparent. In the buffer's own space.
+    func maskedImage(_ selection: Selection, buffer: PixelBuffer, layer: Layer, state: DocumentState) -> CIImage {
+        buffer.ciImage().applyingFilter("CIBlendWithMask", parameters: [
+            kCIInputBackgroundImageKey: CIImage.empty(),
+            kCIInputMaskImageKey: layerSpaceMask(selection, buffer: buffer, layer: layer, state: state),
+        ]).cropped(to: buffer.bounds)
     }
 
     /// A layer's picture in the document's Core Image space, before opacity and blending.
@@ -188,9 +200,33 @@ public final class Renderer {
             filtered = base.clampedToExtent().applyingFilter("CIPixellate", parameters: [
                 kCIInputScaleKey: max(region.amount, 2), kCIInputCenterKey: CIVector(x: corner.x, y: corner.y),
             ])
+        case .spotlight:
+            // Spotlights work together; `applySpotlights` handles them.
+            return below
         }
         return filtered.cropped(to: documentRect).applyingFilter("CIBlendWithAlphaMask", parameters: [
             kCIInputBackgroundImageKey: below, kCIInputMaskImageKey: regionMask(region, layer: layer, state: state),
+        ])
+    }
+
+    /// Darkens the picture everywhere except inside the spotlights. They are applied together: one after
+    /// another, each would darken the areas the others are meant to keep bright.
+    private func applySpotlights(_ layers: [Layer], below: CIImage, state: DocumentState) -> CIImage {
+        var lit = CIImage.empty()
+        var darkness = 0.0
+        for layer in layers {
+            guard let region = layer.effectRegion else { continue }
+            lit = regionMask(region, layer: layer, state: state).composited(over: lit)
+            darkness = max(darkness, region.amount)
+        }
+        let keep = 1 - min(max(darkness, 0), 100) / 100
+        // Premultiplied pixels: scaling the color and leaving alpha alone darkens without changing transparency.
+        let dimmed = below.applyingFilter("CIColorMatrix", parameters: [
+            "inputRVector": CIVector(x: keep, y: 0, z: 0, w: 0), "inputGVector": CIVector(x: 0, y: keep, z: 0, w: 0),
+            "inputBVector": CIVector(x: 0, y: 0, z: keep, w: 0),
+        ])
+        return below.applyingFilter("CIBlendWithAlphaMask", parameters: [
+            kCIInputBackgroundImageKey: dimmed, kCIInputMaskImageKey: lit,
         ])
     }
 
@@ -202,10 +238,16 @@ public final class Renderer {
     ) -> CIImage {
         let documentRect = CGRect(origin: .zero, size: state.size)
         var result = CIImage.empty()
-        for layer in state.layers where layer.isVisible && layer.opacity > 0 {
-            if let only, !only.contains(layer.id) { continue }
+        let shown = state.layers.filter { $0.isVisible && $0.opacity > 0 && (only?.contains($0.id) ?? true) }
+        let spotlights = shown.filter { $0.effectRegion?.effect == .spotlight }
+        for layer in shown {
             if case .effect(let region) = layer.content {
-                result = applyRegion(region, layer: layer, below: result, state: state)
+                if region.effect == .spotlight {
+                    // All of them take effect where the lowest one sits in the stack.
+                    if layer.id == spotlights.first?.id { result = applySpotlights(spotlights, below: result, state: state) }
+                } else {
+                    result = applyRegion(region, layer: layer, below: result, state: state)
+                }
                 continue
             }
             guard var image = contentImage(layer, state: state, colorSpace: colorSpace, preview: preview) else { continue }

@@ -23,7 +23,8 @@ let application = NSApplication.shared
 trace("application created")
 let appDelegate = AppDelegate()
 application.delegate = appDelegate
-// Maintenance runs have no window and should not flash an icon in the Dock.
-let isMaintenanceRun = CommandLine.arguments.contains { $0 == "--make-default" || $0 == "--restore-default" }
+// Maintenance runs have no window and should not flash an icon in the Dock; neither should a snapshot run,
+// which works out of sight.
+let isMaintenanceRun = CommandLine.arguments.contains { ["--make-default", "--restore-default", "--snapshot"].contains($0) }
 application.setActivationPolicy(isMaintenanceRun ? .accessory : .regular)
 application.run()

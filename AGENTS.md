@@ -59,7 +59,10 @@ Installing changes which app opens images system-wide (`DefaultViewer.swift`); t
 - **Numbers in SwiftUI text.** `Text("\(width)")` formats the integer for the locale ("1 200"). Use `Text(verbatim:)` for pixel sizes.
 - **Async overloads.** Inside a `Task`, `window.beginSheet(sheet)` resolves to the async variant. Pass `completionHandler: nil`.
 - **Never run `--restore-default`, and never call the default-app APIs aimed at another app, to test something.** An app may claim a file type for itself silently, but `NSWorkspace.setDefaultApplication` and `LSSetDefaultRoleHandlerForContentType` pointed at a different app make macOS put a confirmation dialog on the user's screen for every type and wait for the answer. One restore run is about sixty dialogs. The command and the Settings button exist for the user to press; leave them alone.
-- **Menu shortcuts without modifiers** would swallow typing in every text field. Tool shortcuts are handled in `EditorController.handleKeyDown`, not as menu key equivalents.
+- **Menu shortcuts without modifiers** would swallow typing in every text field. Tool shortcuts are handled in `EditorController.handleKeyDown`, not as menu key equivalents. `F2` is the exception, because it types nothing.
+- **New fields in `TextContent`, `ShapeContent` and `EffectRegion` must be optional.** They are decoded from `.pixix` projects, and a project saved before the field existed has no key for it. A new enum case needs a bump of `ProjectFile.currentVersion`, so that older versions of the app say "saved by a newer version" instead of failing to read.
+- **A text layer's box and what it paints are two things.** `Layer.frameBounds` is the box the handles go around; `localBounds` also takes in shadows and the tail of a speech bubble. Place text by `frameBounds`, and change text through `Layer.setText`, which keeps the box and the tail where they are.
+- **Vision and VisionKit are linked but must not run before the first frame.** Linking them costs nothing at launch (measured); creating `LiveTextController` does, so it is made on the run loop turn after a picture is shown.
 
 ## Checking the interface without a person
 
@@ -73,7 +76,13 @@ $APP --snapshot out.png photo.jpg                        # picture of the viewer
 $APP --snapshot out.png --edit --demo tools photo.jpg    # picture of the editor after a scripted scenario
 ```
 
-Scenarios (`Sources/Pixix/App/Diagnostics.swift`): `meme`, `tools`, `crop`, `crop-applied`, `select`, `effect`, `export`. `tools` drives every tool through the same entry points real mouse input uses. One more, `mouse`, runs in the viewer, without `--edit`: it sends wheel and side-button events to the window and prints the zoom and the file after each one. Add a scenario when adding a tool or dialog, then look at the PNG. With a sheet open, the sheet is what gets captured.
+Scenarios (`Sources/Pixix/App/Diagnostics.swift`), with `--edit`: `meme`, `tools`, `markup`, `text`, `layers`, `append`, `subject`, `cutout`, `save`, `crop`, `crop-applied`, `select`, `effect`, `export`, `menu`. `tools` drives every tool through the same entry points real mouse input uses. In the viewer, without `--edit`: `mouse` sends wheel and side-button events to the window and prints the zoom and the file after each one; `windows`, `files`, `livetext`, `info` and `menu` exercise what their names say and print what happened. Add a scenario when adding a tool or dialog, then look at the PNG. With a sheet or the Info popover open, that is what gets captured.
+
+These runs are unattended, and must stay so: the author is usually at the machine while they run.
+
+- A run with `--snapshot`, `--timing`, `--quit` or `--close` keeps its window off the screen and transparent, does not activate the app, and quits without asking about unsaved edits (`LaunchOptions.isUnattended`). A scenario must never end in a question to the user.
+- `files` and `save` change the file they are given. Run them on a copy under `~/Library/Caches/Pixix/scratch`. `save` and the undo of `files` leave a file in the Trash; remove it afterwards.
+- Put a time limit on every launch, for example `perl -e 'alarm 40; exec @ARGV' $APP …`, and check with `pgrep -lf Pixix` that nothing is left running.
 
 Engine tests can also dump renders for inspection: set `PIXIX_TEST_OUTPUT` to a folder.
 

@@ -72,15 +72,30 @@ public struct TextContent: Codable, Sendable, Hashable {
     public var outlineWidth = 0.0
     public var outlineColor = RGBAColor.black
     public var background: RGBAColor?
+    /// Blur radius of a drop shadow, in pixels. Nil or zero means no shadow.
+    public var shadow: Double?
+    /// Makes the text a speech bubble: the tip of its tail, in the coordinates of the text box.
+    public var tail: CGPoint?
 
     public init() {}
 }
 
-public enum ShapeKind: String, Codable, Sendable, CaseIterable {
-    case line, arrow, rectangle, ellipse, freehand, highlighter
+/// How far a drop shadow of the given blur radius reaches past what casts it.
+func shadowReach(_ radius: Double?) -> CGFloat {
+    guard let radius, radius > 0 else { return 0 }
+    return (radius * 2).rounded(.up)
 }
 
-/// A vector shape. Lines and arrows use two points; rectangles and ellipses use
+public enum ShapeKind: String, Codable, Sendable, CaseIterable {
+    case line, arrow, rectangle, ellipse, freehand, highlighter
+    /// A filled circle with a short label, for numbering steps.
+    case badge
+
+    /// True for kinds laid out by the two corners of a box.
+    public var isBox: Bool { self == .rectangle || self == .ellipse || self == .badge }
+}
+
+/// A vector shape. Lines and arrows use two points; rectangles, ellipses and badges use
 /// the corner points of their box; freehand strokes use every sampled point.
 public struct ShapeContent: Codable, Sendable, Hashable {
     public var kind: ShapeKind
@@ -89,6 +104,10 @@ public struct ShapeContent: Codable, Sendable, Hashable {
     public var strokeWidth = 6.0
     public var fillColor: RGBAColor?
     public var cornerRadius = 0.0
+    /// What a badge says, usually a number.
+    public var label: String?
+    /// Blur radius of a drop shadow, in pixels. Nil or zero means no shadow.
+    public var shadow: Double?
 
     public init(kind: ShapeKind, points: [CGPoint]) {
         self.kind = kind
@@ -107,22 +126,34 @@ public struct ShapeContent: Codable, Sendable, Hashable {
 
     /// How far paint reaches outside `pointBounds`.
     public var outset: CGFloat {
-        switch kind {
+        let paint: CGFloat = switch kind {
         case .arrow: max(strokeWidth * 2.5, 10)
+        case .badge: 1
         default: strokeWidth / 2 + 1
         }
+        return paint + shadowReach(shadow)
     }
 }
 
 public enum RegionEffect: String, Codable, Sendable, CaseIterable {
     case blur, pixelate
+    /// Leaves the area as it is and darkens everything around it.
+    case spotlight
+
+    public var title: String {
+        switch self {
+        case .blur: "Blur"
+        case .pixelate: "Pixelate"
+        case .spotlight: "Spotlight"
+        }
+    }
 }
 
-/// A movable area that blurs or pixelates everything underneath it.
+/// A movable area that blurs or pixelates everything underneath it, or dims everything around it.
 public struct EffectRegion: Codable, Sendable, Hashable {
     public var effect: RegionEffect
     public var size: CGSize
-    /// Blur radius or pixel cell size, in document pixels.
+    /// Blur radius or pixel cell size in document pixels; for a spotlight, how dark the rest gets, 0...100.
     public var amount = 16.0
     public var isEllipse = false
 
@@ -188,7 +219,7 @@ public struct Layer: Identifiable {
     public var kindSymbol: String {
         switch content {
         case .raster: "photo"
-        case .text: "textformat"
+        case .text(let text): text.tail == nil ? "textformat" : "bubble.left"
         case .shape(let shape):
             switch shape.kind {
             case .line: "line.diagonal"
@@ -197,8 +228,14 @@ public struct Layer: Identifiable {
             case .ellipse: "circle"
             case .freehand: "scribble"
             case .highlighter: "highlighter"
+            case .badge: "1.circle"
             }
-        case .effect(let region): region.effect == .blur ? "drop" : "square.grid.3x3"
+        case .effect(let region):
+            switch region.effect {
+            case .blur: "drop"
+            case .pixelate: "square.grid.3x3"
+            case .spotlight: "circle.dashed.inset.filled"
+            }
         }
     }
 
@@ -206,15 +243,29 @@ public struct Layer: Identifiable {
     public var localBounds: CGRect {
         switch content {
         case .raster(let buffer): buffer.bounds
-        case .text(let text): CGRect(origin: .zero, size: ObjectRenderer.textSize(text))
+        case .text(let text): ObjectRenderer.textBounds(text)
         case .shape(let shape): shape.pointBounds.insetBy(dx: -shape.outset, dy: -shape.outset)
         case .effect(let region): CGRect(origin: .zero, size: region.size)
         }
     }
 
-    /// The four corners of the layer in document coordinates: top-left, top-right, bottom-right, bottom-left.
+    /// The box that handles go around, in the layer's own coordinates. Unlike `localBounds` it leaves out
+    /// shadows and the tail of a speech bubble, which would make the frame look loose.
+    public var frameBounds: CGRect {
+        switch content {
+        case .text(let text):
+            return CGRect(origin: .zero, size: ObjectRenderer.textSize(text))
+        case .shape(let shape):
+            let paint = shape.outset - shadowReach(shape.shadow)
+            return shape.pointBounds.insetBy(dx: -paint, dy: -paint)
+        default:
+            return localBounds
+        }
+    }
+
+    /// The four corners of the frame in document coordinates: top-left, top-right, bottom-right, bottom-left.
     public var corners: [CGPoint] {
-        let box = localBounds
+        let box = frameBounds
         return [
             CGPoint(x: box.minX, y: box.minY), CGPoint(x: box.maxX, y: box.minY),
             CGPoint(x: box.maxX, y: box.maxY), CGPoint(x: box.minX, y: box.maxY),
@@ -240,16 +291,25 @@ public struct Layer: Identifiable {
             // The box grows from its origin, so shift it to keep the anchor still.
             let shift = CGAffineTransform(translationX: anchor.x - anchor.x * abs(sx), y: anchor.y - anchor.y * abs(sy))
             transform = shift.concatenating(transform)
-        case .shape(var shape) where shape.kind == .rectangle || shape.kind == .ellipse:
+        case .shape(var shape) where shape.kind.isBox:
             let stretch = CGAffineTransform.scale(x: abs(sx), y: abs(sy), about: anchor)
             shape.points = shape.points.map { $0.applying(stretch) }
             content = .shape(shape)
         case .text(var text):
-            let before = localBounds.size
+            let before = frameBounds.size
             let factor = max(abs(sx), abs(sy)) == 1 ? min(abs(sx), abs(sy)) : max(abs(sx), abs(sy))
-            text.fontSize = min(max(text.fontSize * factor, 4), 2000)
+            let size = min(max(text.fontSize * factor, 4), 2000)
+            let applied = size / max(text.fontSize, 0.001)
+            text.fontSize = size
+            // The bubble's tail grows with the text, measured from the middle of the box.
+            if let tail = text.tail, let current = self.text {
+                let old = ObjectRenderer.textSize(current), new = ObjectRenderer.textSize(text)
+                text.tail = CGPoint(
+                    x: new.width / 2 + (tail.x - old.width / 2) * applied, y: new.height / 2 + (tail.y - old.height / 2) * applied
+                )
+            }
             content = .text(text)
-            let after = localBounds.size
+            let after = frameBounds.size
             guard before.width > 0, before.height > 0 else { return }
             // Text reflows, so keep the anchor's relative position in the box rather than its coordinates.
             let relative = CGPoint(x: anchor.x / before.width, y: anchor.y / before.height)
@@ -260,5 +320,17 @@ public struct Layer: Identifiable {
         default:
             transform = CGAffineTransform.scale(x: sx, y: sy, about: anchor).concatenating(transform)
         }
+    }
+
+    /// Replaces the text of a text layer. `anchor` names the point of the text box that stays where it is on
+    /// the canvas while the box changes size: (0.5, 0.5) is its middle. The tip of a bubble's tail stays put too.
+    public mutating func setText(_ text: TextContent, keeping anchor: CGPoint = CGPoint(x: 0.5, y: 0.5)) {
+        guard let old = self.text else { return }
+        let before = ObjectRenderer.textSize(old), after = ObjectRenderer.textSize(text)
+        let shift = CGPoint(x: (before.width - after.width) * anchor.x, y: (before.height - after.height) * anchor.y)
+        var text = text
+        if let tail = text.tail, tail == old.tail { text.tail = tail - shift }
+        content = .text(text)
+        transform = CGAffineTransform(translationX: shift.x, y: shift.y).concatenating(transform)
     }
 }

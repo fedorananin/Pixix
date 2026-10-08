@@ -186,6 +186,57 @@ func dump(_ document: Document, _ name: String) {
         #expect(pixel(document, 5, 5) == .green)
         #expect(pixel(document, 5, 55) == .red)
     }
+
+    @Test(arguments: [CGRect(x: 0, y: 0, width: 400, height: 300), CGRect(x: 190, y: 30, width: 200, height: 240)])
+    func straightenedFrameShrinksUntilNoCornerIsEmpty(frame: CGRect) throws {
+        let bounds = CGRect(x: 0, y: 0, width: 400, height: 300)
+        let angle = 9 * CGFloat.pi / 180
+        // Without shrinking, a tilted frame reaches past the picture and leaves a transparent corner.
+        let tilted = try #require(Document(image: solidImage(width: 400, height: 300, .white)))
+        tilted.crop(to: frame, angle: angle)
+        let corners = { (document: Document) -> [Pixel] in
+            let w = Int(document.size.width), h = Int(document.size.height)
+            return [pixel(document, 1, 1), pixel(document, w - 2, 1), pixel(document, 1, h - 2), pixel(document, w - 2, h - 2)]
+        }
+        #expect(corners(tilted).contains { $0.a < 255 })
+
+        let fitted = frame.shrunkToFit(bounds, turnedBy: angle)
+        #expect(fitted.width < frame.width)
+        #expect(abs(fitted.width / fitted.height - frame.width / frame.height) < 0.001)
+        #expect(abs(fitted.midX - frame.midX) < 0.001 && abs(fitted.midY - frame.midY) < 0.001)
+        let document = try #require(Document(image: solidImage(width: 400, height: 300, .white)))
+        // Whole pixels, rounded inward, the way the crop tool hands the frame over.
+        document.crop(to: fitted.insetBy(dx: 1, dy: 1).integral, angle: angle)
+        #expect(corners(document).allSatisfy { $0 == .white })
+        // The other direction fits as well, and an upright frame is left alone.
+        #expect(frame.shrunkToFit(bounds, turnedBy: -angle).width < frame.width)
+        #expect(frame.shrunkToFit(bounds, turnedBy: 0) == frame)
+        // A frame the user pulled past the picture to extend the canvas is theirs to keep.
+        let outside = CGRect(x: 300, y: 250, width: 300, height: 200)
+        #expect(outside.shrunkToFit(bounds, turnedBy: angle) == outside)
+    }
+
+    @Test func appendedPicturesGoBelowAndBeside() throws {
+        let document = try #require(Document(image: solidImage(width: 100, height: 50, RGBAColor(red: 1, green: 0, blue: 0))))
+        document.setSelection(Selection.rectangle(CGRect(x: 0, y: 0, width: 10, height: 10), in: document.size))
+        // Half as wide as the canvas, so it is doubled to span the bottom edge.
+        let below = try #require(document.appendImage(solidImage(width: 50, height: 50, RGBAColor(red: 0, green: 0, blue: 1)), name: "Below", to: .bottom))
+        #expect(document.size == CGSize(width: 100, height: 150))
+        #expect(document.activeLayerID == below)
+        #expect(document.selection == nil)
+        #expect(pixel(document, 50, 25) == .red)
+        #expect(pixel(document, 2, 52) == .blue)
+        #expect(pixel(document, 97, 147) == .blue)
+        document.appendImage(solidImage(width: 10, height: 30, RGBAColor(red: 0, green: 1, blue: 0)), name: "Beside", to: .right)
+        #expect(document.size == CGSize(width: 150, height: 150))
+        #expect(pixel(document, 125, 75) == .green)
+        #expect(pixel(document, 97, 147) == .blue)
+        document.undo()
+        document.undo()
+        document.undo()
+        #expect(document.size == CGSize(width: 100, height: 50))
+        #expect(document.layers.count == 1)
+    }
 }
 
 @MainActor
@@ -529,7 +580,238 @@ func dump(_ document: Document, _ name: String) {
 }
 
 @MainActor
+@Suite struct MarkupTests {
+    @Test func badgeIsDiscWithNumber() throws {
+        let document = try #require(Document(image: solidImage(width: 200, height: 200, .white)))
+        #expect(document.nextBadgeNumber == 1)
+        var badge = ShapeContent(kind: .badge, points: [CGPoint(x: 60, y: 60), CGPoint(x: 140, y: 140)])
+        badge.strokeColor = RGBAColor(red: 0, green: 0, blue: 1)
+        badge.label = "7"
+        document.addLayer(Layer(name: "Badge", content: .shape(badge)))
+        #expect(pixel(document, 68, 100).isClose(to: .blue, tolerance: 6))
+        #expect(pixel(document, 62, 62) == .white)
+        // The digit is white on the dark disc.
+        let bytes = document.pixels()
+        var ink = 0
+        for y in 75..<125 {
+            for x in 80..<120 {
+                let o = (y * 200 + x) * 4
+                if bytes[o] > 240 && bytes[o + 1] > 240 && bytes[o + 2] > 240 { ink += 1 }
+            }
+        }
+        #expect(ink > 60 && ink < 1500)
+        #expect(document.nextBadgeNumber == 8)
+        dump(document, "badge")
+
+        // Resizing a badge changes its box, so the number grows with it.
+        var layer = try #require(document.activeLayer)
+        layer.scale(x: 2, y: 2, aboutLocal: CGPoint(x: 60, y: 60))
+        #expect(layer.shape?.pointBounds == CGRect(x: 60, y: 60, width: 160, height: 160))
+    }
+
+    @Test func shadowFallsBelowTextAndShapes() throws {
+        let document = try #require(Document(image: solidImage(width: 240, height: 160, .white)))
+        var box = ShapeContent(kind: .rectangle, points: [CGPoint(x: 40, y: 30), CGPoint(x: 120, y: 80)])
+        box.fillColor = RGBAColor(red: 1, green: 0, blue: 0)
+        box.strokeWidth = 0
+        let plain = Layer(name: "Box", content: .shape(box))
+        document.addLayer(plain)
+        #expect(pixel(document, 80, 86) == .white)
+        box.shadow = 10
+        let shadowed = Layer(name: "Box", content: .shape(box))
+        #expect(shadowed.localBounds.height > plain.localBounds.height + 20)
+        document.updateLayer(plain.id, name: "Shadow") { $0.content = .shape(box) }
+        // Darker right under the box, and still the box itself where it was.
+        #expect(pixel(document, 80, 86).r < 230)
+        #expect(pixel(document, 80, 50) == .red)
+        #expect(pixel(document, 80, 120) == .white)
+
+        var text = TextContent()
+        text.string = "Hi"
+        text.fontSize = 40
+        let before = Layer(name: "Text", content: .text(text))
+        text.shadow = 8
+        let after = Layer(name: "Text", content: .text(text))
+        // The box is the same; only the painted area grows.
+        #expect(ObjectRenderer.textSize(text) == before.localBounds.size)
+        #expect(after.localBounds.width == before.localBounds.width + 32)
+        dump(document, "shadow")
+    }
+
+    @Test func spotlightsDimEverythingAroundThem() throws {
+        let document = try #require(Document(image: solidImage(width: 200, height: 200, .white)))
+        var region = EffectRegion(effect: .spotlight, size: CGSize(width: 80, height: 80))
+        region.amount = 60
+        var first = Layer(name: "Spotlight", content: .effect(region))
+        first.transform = CGAffineTransform(translationX: 20, y: 20)
+        document.addLayer(first)
+        #expect(pixel(document, 60, 60) == .white)
+        #expect(pixel(document, 150, 150).isClose(to: Pixel(r: 102, g: 102, b: 102, a: 255)))
+        // A second one lights its own area without darkening the first.
+        var second = Layer(name: "Spotlight", content: .effect(EffectRegion(effect: .spotlight, size: CGSize(width: 40, height: 40))))
+        second.transform = CGAffineTransform(translationX: 140, y: 140)
+        document.addLayer(second)
+        #expect(pixel(document, 60, 60) == .white)
+        #expect(pixel(document, 160, 160) == .white)
+        #expect(pixel(document, 10, 190).isClose(to: Pixel(r: 102, g: 102, b: 102, a: 255)))
+        // Transparency around the picture stays transparency.
+        document.crop(to: CGRect(x: 0, y: 0, width: 200, height: 240))
+        #expect(pixel(document, 100, 230) == .clear)
+        dump(document, "spotlight")
+    }
+
+    @Test func speechBubbleKeepsItsTailInPlace() throws {
+        let document = try #require(Document(image: solidImage(width: 400, height: 300, .white)))
+        var text = TextContent()
+        text.string = "Look"
+        text.fontSize = 32
+        text.color = .white
+        text.background = RGBAColor(red: 0, green: 0, blue: 1)
+        let size = ObjectRenderer.textSize(text)
+        text.tail = CGPoint(x: size.width / 2, y: size.height + 80)
+        var layer = Layer(name: "Callout", content: .text(text))
+        layer.transform = CGAffineTransform(translationX: 150, y: 60)
+        document.addLayer(layer)
+        let tip = text.tail!.applying(layer.transform)
+        #expect(layer.documentBounds.contains(tip))
+        // A little way up from the tip the tail is already paint.
+        #expect(pixel(document, Int(tip.x), Int(tip.y) - 30).isClose(to: .blue, tolerance: 8))
+        #expect(pixel(document, Int(tip.x) + 60, Int(tip.y) - 30) == .white)
+        dump(document, "callout")
+
+        // Typing changes the size of the box; the tip must not move.
+        var longer = text
+        longer.string = "Look at this one"
+        layer.setText(longer)
+        let moved = try #require(layer.text?.tail).applying(layer.transform)
+        #expect(abs(moved.x - tip.x) < 0.01 && abs(moved.y - tip.y) < 0.01)
+        // Resizing by a corner scales the tail with the letters.
+        layer.scale(x: 2, y: 2, aboutLocal: .zero)
+        let scaled = try #require(layer.text)
+        let box = ObjectRenderer.textSize(scaled)
+        #expect(abs((scaled.tail!.y - box.height / 2) - (moved.applying(layer.transform.inverted()).y - box.height / 2)) < 400)
+        #expect(scaled.fontSize == 64)
+    }
+
+    @Test func textLayoutPlacesCaretsAndFindsPositions() {
+        var text = TextContent()
+        text.string = "Hello\nWorld"
+        text.fontSize = 40
+        let layout = ObjectRenderer.layout(text)
+        #expect(layout.lines.count == 2 && layout.length == 11)
+        let box = CGRect(origin: .zero, size: ObjectRenderer.textSize(text))
+        for position in 0...11 { #expect(box.insetBy(dx: -1, dy: -1).contains(layout.caret(at: position))) }
+        #expect(layout.caret(at: 0).minX < layout.caret(at: 3).minX)
+        #expect(layout.caret(at: 3).minX < layout.caret(at: 5).minX)
+        // Position 6 is the start of the second line.
+        #expect(layout.caret(at: 6).minY > layout.caret(at: 5).maxY - 1)
+        #expect(abs(layout.caret(at: 6).minX - layout.caret(at: 0).minX) < 0.5)
+        for position in [0, 2, 5, 6, 9, 11] {
+            let caret = layout.caret(at: position)
+            #expect(layout.position(at: CGPoint(x: caret.minX + 0.5, y: caret.midY)) == position)
+        }
+        // Far to the right of the first line is its end, before the line break.
+        #expect(layout.position(at: CGPoint(x: 5000, y: layout.caret(at: 0).midY)) == 5)
+        #expect(layout.position(at: CGPoint(x: 5000, y: 5000)) == 11)
+        #expect(layout.rects(for: NSRange(location: 3, length: 5)).count == 2)
+        #expect(layout.rects(for: NSRange(location: 3, length: 0)).isEmpty)
+
+        // A trailing line break opens an empty line for the caret, and empty text still has one.
+        text.string = "Hi\n"
+        let open = ObjectRenderer.layout(text)
+        #expect(open.lines.count == 2)
+        #expect(open.caret(at: 3).minY > open.caret(at: 2).minY)
+        #expect(open.position(at: CGPoint(x: 5000, y: open.caret(at: 3).midY)) == 3)
+        text.string = ""
+        #expect(ObjectRenderer.layout(text).caret(at: 0).height > 20)
+        #expect(ObjectRenderer.layout(text).position(at: CGPoint(x: 500, y: 10)) == 0)
+
+        // Centered lines start where the drawing puts them.
+        text.string = "A\nLonger line"
+        text.alignment = .center
+        let centered = ObjectRenderer.layout(text)
+        #expect(centered.caret(at: 0).minX > centered.caret(at: 2).minX + 20)
+    }
+
+    @Test func eraseOutsideKeepsOnlyTheSelection() throws {
+        let document = try #require(Document(image: quadrantImage()))
+        let selection = try #require(Selection.rectangle(CGRect(x: 0, y: 0, width: 32, height: 24), in: document.size))
+        document.eraseOutside(selection, layer: document.layers[0].id, name: "Remove Background")
+        #expect(pixel(document, 10, 10) == .red)
+        #expect(pixel(document, 40, 10) == .clear)
+        #expect(pixel(document, 10, 40) == .clear)
+        #expect(document.history.undoName == "Remove Background")
+        document.undo()
+        #expect(pixel(document, 40, 10) == .green)
+
+        // The mask is in document space, wherever the layer has been moved to.
+        let dot = try #require(document.addImageLayer(solidImage(width: 20, height: 20, .black), name: "Dot", center: CGPoint(x: 32, y: 24)))
+        document.eraseOutside(selection, layer: dot, name: "Remove Background")
+        #expect(pixel(document, 30, 20) == Pixel(r: 0, g: 0, b: 0, a: 255))
+        #expect(pixel(document, 36, 28) == .white)
+        #expect(pixel(document, 36, 20) == .green)
+    }
+
+    @Test func selectionFromCoverageAndLayerThumbnail() throws {
+        var bytes = Data(count: 8 * 6)
+        bytes[2 * 8 + 3] = 255
+        bytes[3 * 8 + 5] = 128
+        let selection = try #require(Selection(coverage: bytes, width: 8, height: 6))
+        #expect(selection.bounds == CGRect(x: 3, y: 2, width: 3, height: 2))
+        #expect(Selection(coverage: Data(count: 5), width: 8, height: 6) == nil)
+
+        let document = try #require(Document(image: quadrantImage()))
+        let dot = try #require(document.addImageLayer(solidImage(width: 20, height: 20, .black), name: "Dot"))
+        document.updateLayer(dot, name: "Hide") { $0.isVisible = false }
+        let thumbnail = try #require(document.thumbnail(ofLayer: dot, maxPixel: 32))
+        #expect(thumbnail.width == 32 && thumbnail.height == 24)
+        // Only that layer is in it, hidden or not: black in the middle, nothing in the corner.
+        let buffer = try #require(PixelBuffer(image: thumbnail, colorSpace: document.colorSpace))
+        #expect(buffer.pixel(x: 16, y: 12)?.alpha == 255)
+        #expect(buffer.pixel(x: 1, y: 1)?.alpha == 0)
+    }
+}
+
+@MainActor
 @Suite struct ProjectTests {
+    @Test func olderProjectsWithoutNewFieldsStillDecode() throws {
+        let color = #"{"red":1,"green":0,"blue":0,"alpha":1}"#
+        let shape = try JSONDecoder().decode(ShapeContent.self, from: Data(
+            #"{"kind":"line","points":[[0,0],[9,9]],"strokeColor":\#(color),"strokeWidth":6,"cornerRadius":0}"#.utf8
+        ))
+        #expect(shape.label == nil && shape.shadow == nil)
+        let text = try JSONDecoder().decode(TextContent.self, from: Data(
+            #"{"string":"Hi","fontName":"Impact","fontSize":20,"isBold":false,"isItalic":false,"alignment":"left","color":\#(color),"outlineWidth":0,"outlineColor":\#(color)}"#.utf8
+        ))
+        #expect(text.shadow == nil && text.tail == nil && text.background == nil)
+    }
+
+    @Test func markupSurvivesAProject() throws {
+        let document = try #require(Document(image: quadrantImage()))
+        var badge = ShapeContent(kind: .badge, points: [CGPoint(x: 4, y: 4), CGPoint(x: 24, y: 24)])
+        badge.label = "3"
+        badge.shadow = 2
+        document.addLayer(Layer(name: "Badge", content: .shape(badge)))
+        document.addLayer(Layer(name: "Spotlight", content: .effect(EffectRegion(effect: .spotlight, size: CGSize(width: 20, height: 20)))))
+        var text = TextContent()
+        text.string = "Hi"
+        text.fontSize = 10
+        text.background = .black
+        text.tail = CGPoint(x: 5, y: 40)
+        document.addLayer(Layer(name: "Callout", content: .text(text)))
+
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("pixix-project-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let url = folder.appendingPathComponent("markup.pixix")
+        try ProjectFile.write(document, to: url)
+        let loaded = try ProjectFile.read(from: url)
+        #expect(loaded.layers[1].shape == badge)
+        #expect(loaded.layers[2].effectRegion?.effect == .spotlight)
+        #expect(loaded.layers[3].text == text)
+        #expect(loaded.pixels() == document.pixels())
+    }
+
     @Test func projectRoundTrip() throws {
         let document = try #require(Document(image: quadrantImage()))
         var text = TextContent()

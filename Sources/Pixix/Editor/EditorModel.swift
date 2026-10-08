@@ -11,8 +11,8 @@ enum ToolKind: String, CaseIterable, Identifiable {
     case move, crop
     case selectRectangle, selectEllipse, lasso, wand
     case brush, pencil, eraser, clone, fill, gradient, picker
-    case text, arrow, line, rectangle, ellipse, pen, highlighter
-    case blurRegion, pixelateRegion
+    case text, callout, badge, arrow, line, rectangle, ellipse, pen, highlighter
+    case blurRegion, pixelateRegion, spotlightRegion
 
     var id: String { rawValue }
 
@@ -32,6 +32,8 @@ enum ToolKind: String, CaseIterable, Identifiable {
         case .gradient: "Gradient"
         case .picker: "Color Picker"
         case .text: "Text"
+        case .callout: "Speech Bubble"
+        case .badge: "Number Badge"
         case .arrow: "Arrow"
         case .line: "Line"
         case .rectangle: "Rectangle"
@@ -40,6 +42,7 @@ enum ToolKind: String, CaseIterable, Identifiable {
         case .highlighter: "Highlighter"
         case .blurRegion: "Blur Area"
         case .pixelateRegion: "Pixelate Area"
+        case .spotlightRegion: "Spotlight"
         }
     }
 
@@ -59,6 +62,8 @@ enum ToolKind: String, CaseIterable, Identifiable {
         case .gradient: "square.lefthalf.filled"
         case .picker: "eyedropper"
         case .text: "textformat"
+        case .callout: "bubble.left"
+        case .badge: "1.circle"
         case .arrow: "arrow.up.right"
         case .line: "line.diagonal"
         case .rectangle: "rectangle"
@@ -67,6 +72,7 @@ enum ToolKind: String, CaseIterable, Identifiable {
         case .highlighter: "highlighter"
         case .blurRegion: "drop"
         case .pixelateRegion: "square.grid.3x3"
+        case .spotlightRegion: "circle.dashed.inset.filled"
         }
     }
 
@@ -87,6 +93,8 @@ enum ToolKind: String, CaseIterable, Identifiable {
         case .gradient: "d"
         case .picker: "i"
         case .text: "t"
+        case .callout: "y"
+        case .badge: "q"
         case .arrow: "a"
         case .line: "\\"
         case .rectangle: "r"
@@ -95,6 +103,7 @@ enum ToolKind: String, CaseIterable, Identifiable {
         case .highlighter: "h"
         case .blurRegion: "j"
         case .pixelateRegion: "k"
+        case .spotlightRegion: "z"
         }
     }
 
@@ -108,8 +117,8 @@ enum ToolKind: String, CaseIterable, Identifiable {
         [.move, .crop],
         [.selectRectangle, .selectEllipse, .lasso, .wand],
         [.brush, .pencil, .eraser, .clone, .fill, .gradient, .picker],
-        [.text, .arrow, .line, .rectangle, .ellipse, .pen, .highlighter],
-        [.blurRegion, .pixelateRegion],
+        [.text, .callout, .badge, .arrow, .line, .rectangle, .ellipse, .pen, .highlighter],
+        [.blurRegion, .pixelateRegion, .spotlightRegion],
     ]
 
     var shapeKind: ShapeKind? {
@@ -120,6 +129,16 @@ enum ToolKind: String, CaseIterable, Identifiable {
         case .ellipse: .ellipse
         case .pen: .freehand
         case .highlighter: .highlighter
+        case .badge: .badge
+        default: nil
+        }
+    }
+
+    var regionEffect: RegionEffect? {
+        switch self {
+        case .blurRegion: .blur
+        case .pixelateRegion: .pixelate
+        case .spotlightRegion: .spotlight
         default: nil
         }
     }
@@ -209,6 +228,8 @@ final class EditorModel {
     var fillsShapes = false
     var cornerRadius = 0.0
     var regionAmount = 18.0
+    /// Diameter of the next badge in pixels. Nil picks a size that suits the picture.
+    var badgeSize: Double?
 
     // Text for new layers
     var textDefaults = TextContent()
@@ -229,8 +250,15 @@ final class EditorModel {
     var canvasHeight = 0
     var canvasAnchor = CGPoint(x: 0.5, y: 0.5)
     var effectValues: [String: Double] = [:]
-    var focusesTextEditor = false
     var expandedSections: Set<String> = ["tool", "layer", "adjust", "layers"]
+
+    // Layers panel
+    /// Bumped when the small pictures of the layers have been redrawn.
+    var thumbnailRevision = 0
+    var renamingLayer: LayerID?
+    var layerNameDraft = ""
+    var draggedLayer: LayerID?
+    var dropTargetLayer: LayerID?
 
     func isExpanded(_ section: String) -> Binding<Bool> {
         Binding(

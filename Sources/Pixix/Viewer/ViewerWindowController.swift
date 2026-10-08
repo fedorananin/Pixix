@@ -31,6 +31,8 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate, Canvas
     private var filmstrip: FilmstripView?
     private var slideshowTimer: Timer?
     private var infoPopover: NSPopover?
+    /// Text recognition over the picture. Made on first use, so it costs nothing until a picture is up.
+    private(set) var liveText: LiveTextController?
     lazy var viewerToolbar = makeToolbar(identifier: "viewer")
     lazy var editorToolbar = makeToolbar(identifier: "editor")
 
@@ -39,6 +41,8 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate, Canvas
 
     var isEditing: Bool { editor != nil }
     var currentURL: URL? { browser?.current }
+    /// The Info popover's window while it is up.
+    var infoWindow: NSWindow? { infoPopover?.isShown == true ? infoPopover?.contentViewController?.view.window : nil }
 
     init() {
         let window = NSWindow(
@@ -133,17 +137,20 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate, Canvas
 
     // MARK: Opening
 
-    /// One URL browses its whole folder; several browse just those files.
+    /// One file browses its whole folder; several browse just those files. A folder browses what is in it.
     func open(_ urls: [URL]) {
-        let images = urls.filter { url in
+        var images: [URL] = [], folders: [URL] = []
+        for url in urls {
             var isDirectory: ObjCBool = false
             FileManager.default.fileExists(atPath: url.path(percentEncoded: false), isDirectory: &isDirectory)
-            return !isDirectory.boolValue
+            if isDirectory.boolValue { folders.append(url) } else { images.append(url) }
         }
         guard !images.isEmpty else {
-            // A project is a folder on disk, so it was filtered out above.
-            if let project = urls.first(where: { $0.pathExtension.lowercased() == ProjectFile.fileExtension }) {
+            // A project is a folder on disk too.
+            if let project = folders.first(where: { $0.pathExtension.lowercased() == ProjectFile.fileExtension }) {
                 openProject(project)
+            } else if let folder = folders.first {
+                openFolder(folder)
             }
             return
         }
@@ -162,14 +169,38 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate, Canvas
         for url in images { NSDocumentController.shared.noteNewRecentDocumentURL(url) }
     }
 
-    private func showEmptyState() {
+    /// Starts browsing a folder from its first picture, in the order chosen in Settings.
+    private func openFolder(_ folder: URL) {
+        let order = Settings.shared.sortOrder, descending = Settings.shared.sortDescending
+        Task { [weak self] in
+            let listed = await Task.detached(priority: .userInitiated) {
+                FolderBrowser.list(folder: folder, order: order, descending: descending)
+            }.value
+            guard let self, !self.isEditing else { return }
+            if let first = listed.first {
+                self.open([first])
+            } else {
+                self.browser?.stop()
+                self.browser = nil
+                self.showEmptyState(
+                    symbol: "folder", title: "No Images",
+                    detail: "“\(folder.lastPathComponent)” has no pictures that Pixix can open."
+                )
+                self.onFirstImage?()
+                self.onFirstImage = nil
+            }
+        }
+    }
+
+    private func showEmptyState(
+        symbol: String = "photo.on.rectangle.angled", title: String = "No Image",
+        detail: String = "Drop an image or a folder here, or choose File › Open."
+    ) {
         canvas.setImage(nil)
         canvas.setContentSize(.zero, resetView: true)
         displayed = nil
-        message.show(
-            symbol: "photo.on.rectangle.angled", title: "No Image",
-            detail: "Drop an image here or choose File › Open."
-        )
+        liveText?.clear()
+        message.show(symbol: symbol, title: title, detail: detail)
         window?.title = "Pixix"
         window?.subtitle = ""
         window?.representedURL = nil
@@ -180,6 +211,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate, Canvas
         loadTask?.cancel()
         player?.stop()
         player = nil
+        liveText?.clear()
         guard let browser, let url = browser.current else {
             showEmptyState()
             return
@@ -235,6 +267,9 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate, Canvas
             self.player = player
             player.play()
         }
+        // On the next turn of the run loop, so that reading text never stands between a picture and the screen.
+        liveText?.clear()
+        DispatchQueue.main.async { [weak self] in self?.updateLiveText() }
         updateChromeState()
         if first || onFirstImage != nil {
             trace("image on screen (\(loaded.isFull ? "full" : "preview"), \(loaded.image.width)×\(loaded.image.height))")
@@ -247,6 +282,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate, Canvas
         canvas.setImage(nil)
         canvas.setContentSize(.zero, resetView: true)
         displayed = nil
+        liveText?.clear()
         message.show(
             symbol: "exclamationmark.triangle", title: "Cannot Open Image",
             detail: "\(url.lastPathComponent)\n\(error.localizedDescription)"
@@ -262,7 +298,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate, Canvas
         let neighbors = [1, -1, 2, -2].compactMap { browser.neighbor(offset: $0, wrap: wrap) }
         var keep = Set(neighbors)
         if let current = browser.current { keep.insert(current) }
-        ImageLoader.shared.cancelAll(except: keep)
+        ImageLoader.shared.setWanted(keep, by: self)
         ImageLoader.shared.prefetch(neighbors, maxPixel: max(canvas.pixelExtent, 512))
     }
 
@@ -325,12 +361,32 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate, Canvas
     func canvasViewportDidChange(_ canvas: CanvasView) {
         zoomBar.setZoom(percent: canvas.zoomPercent)
         editor?.viewportDidChange()
+        liveText?.layout()
+    }
+
+    // MARK: Live Text
+
+    /// Looks for text in the picture on screen, once it is there at full size.
+    private func updateLiveText() {
+        guard Settings.shared.liveText, !isEditing, let displayed, displayed.loaded.isFull, !displayed.loaded.info.isAnimated else {
+            liveText?.clear()
+            return
+        }
+        if liveText == nil { liveText = LiveTextController(canvas: canvas) }
+        liveText?.analyze(displayed.loaded.image)
+    }
+
+    @objc func toggleLiveText(_ sender: Any?) {
+        Settings.shared.liveText.toggle()
+        updateLiveText()
+        showToast(Settings.shared.liveText ? "Live Text is on: select text in pictures" : "Live Text is off")
     }
 
     /// Stops everything that would keep changing the picture while it is being edited.
     func stopPlaybackForEditing() {
         loadTask?.cancel()
         player?.pause()
+        liveText?.clear()
         slideshowTimer?.invalidate()
         slideshowTimer = nil
         setChrome(visible: true)
@@ -341,6 +397,16 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate, Canvas
     func forgetDisplayedImage() {
         displayed = nil
         currentFrameImage = nil
+    }
+
+    /// The file on screen has a new name. A still picture simply carries on; an animation reads its frames
+    /// from the file, so it starts over.
+    func followRename(from old: URL, to new: URL) {
+        ImageLoader.shared.move(old, to: new)
+        let wasShown = displayed?.url == old
+        if wasShown, let loaded = displayed?.loaded { displayed = (new, loaded) }
+        browser?.replace(old, with: new)
+        if wasShown, player != nil { showCurrent() }
     }
 
     // MARK: Navigation
@@ -451,6 +517,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate, Canvas
         case 115: firstImage(nil)
         case 119: lastImage(nil)
         case 117: moveToTrash(nil)
+        case 120: renameFile(nil)
         case 53:
             if let window, window.styleMask.contains(.fullScreen) {
                 window.toggleFullScreen(nil)
@@ -555,6 +622,11 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate, Canvas
         guard let displayed else { return }
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
+        // Text selected in the picture is what the user means to copy.
+        if let text = liveText?.selectedText, !text.isEmpty {
+            pasteboard.setString(text, forType: .string)
+            return
+        }
         let size = NSSize(width: displayed.loaded.image.width, height: displayed.loaded.image.height)
         pasteboard.writeObjects([NSImage(cgImage: displayed.loaded.image, size: size), displayed.url as NSURL])
     }
@@ -567,7 +639,9 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate, Canvas
         guard let url = currentURL else { return }
         let popover = NSPopover()
         popover.behavior = .transient
-        popover.contentViewController = InfoViewController(url: url)
+        popover.contentViewController = InfoViewController(
+            url: url, image: displayed?.url == url ? (currentFrameImage ?? displayed?.loaded.image) : nil
+        )
         if let item = toolbarItem(.info) {
             popover.show(relativeTo: item)
         } else {
@@ -619,6 +693,8 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate, Canvas
         slideshowTimer?.invalidate()
         chromeTimer?.invalidate()
         browser?.stop()
+        liveText?.clear()
+        ImageLoader.shared.forget(self)
         (NSApp.delegate as? AppDelegate)?.controllerDidClose(self)
     }
 
@@ -650,8 +726,14 @@ extension ViewerWindowController: NSMenuItemValidation, NSToolbarItemValidation 
         case #selector(toggleFilmstrip(_:)):
             menuItem?.state = Settings.shared.showsFilmstrip ? .on : .off
             return !isEditing
-        case #selector(moveToTrash(_:)), #selector(setAsWallpaper(_:)):
+        case #selector(toggleLiveText(_:)):
+            menuItem?.state = Settings.shared.liveText ? .on : .off
+            return !isEditing
+        case #selector(moveToTrash(_:)), #selector(setAsWallpaper(_:)), #selector(renameFile(_:)),
+             #selector(duplicateFile(_:)), #selector(copyToFolder(_:)), #selector(moveToFolder(_:)):
             return hasFile && !isEditing
+        case #selector(openInNewWindow(_:)):
+            return hasFile
         case #selector(revealInFinder(_:)), #selector(showInfo(_:)), #selector(shareImage(_:)):
             return hasFile
         case #selector(rotateLeft(_:)), #selector(rotateRight(_:)):

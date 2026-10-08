@@ -26,6 +26,10 @@ class EditorTool {
     /// Return true when the key was used.
     func keyDown(_ event: NSEvent) -> Bool { false }
     func settingsDidChange() {}
+    /// Called after the document changed in any way other than a few pixels.
+    func documentDidChange() {}
+    /// True while the tool is taking typed text.
+    var holdsKeyboard: Bool { false }
 
     func redrawOverlay() {
         canvas.setOverlayNeedsDisplay()
@@ -53,8 +57,7 @@ final class MoveTool: EditorTool {
         guard let hit = layer(at: point) else { return }
         document.setActiveLayer(hit.id)
         if event.clickCount == 2, hit.text != nil {
-            model.tool = .text
-            model.focusesTextEditor = true
+            editor.beginTextEditing(hit.id, at: point)
             return
         }
         frame.beginMove(at: point)
@@ -96,6 +99,9 @@ final class CropTool: EditorTool {
         get { model.cropRect }
         set { model.cropRect = newValue }
     }
+    /// The frame as the user left it. Straightening shrinks the frame on screen from this one, so that
+    /// easing the slider back gives the room back.
+    private var chosen = CGRect.zero
 
     private var ratio: CGFloat? {
         switch model.cropAspect {
@@ -110,8 +116,11 @@ final class CropTool: EditorTool {
 
     override func activate() {
         rect = document.bounds
+        // Before the slider is zeroed: that reports a settings change, which starts from the chosen frame.
+        chosen = rect
         model.straighten = 0
         applyRatio()
+        chosen = rect
     }
 
     override func deactivate() {
@@ -119,7 +128,10 @@ final class CropTool: EditorTool {
     }
 
     override func settingsDidChange() {
+        rect = chosen
         applyRatio()
+        chosen = rect
+        fitToTurnedPicture()
         updatePreview()
         redrawOverlay()
     }
@@ -128,8 +140,17 @@ final class CropTool: EditorTool {
     func reset() {
         rect = document.bounds
         applyRatio()
+        chosen = rect
+        fitToTurnedPicture()
         updatePreview()
         redrawOverlay()
+    }
+
+    /// A straightened picture is tilted under the frame, and a frame as large as before would catch empty
+    /// corners. Shrink it until it is all picture. A frame pulled past the edge to extend the canvas is left alone.
+    private func fitToTurnedPicture() {
+        guard model.straighten != 0, document.bounds.insetBy(dx: -0.5, dy: -0.5).contains(chosen) else { return }
+        rect = chosen.shrunkToFit(document.bounds, turnedBy: model.straighten * .pi / 180)
     }
 
     private func updatePreview() {
@@ -204,12 +225,15 @@ final class CropTool: EditorTool {
     }
 
     override func mouseUp(at point: CGPoint, event: NSEvent) {
+        guard drag != nil else { return }
         drag = nil
         if rect.width < 2 || rect.height < 2 { reset() }
         rect = CGRect(
             x: rect.minX.rounded(), y: rect.minY.rounded(), width: max(rect.width.rounded(), 1),
             height: max(rect.height.rounded(), 1)
         )
+        // A frame set by hand is taken as it is, even tilted past the picture.
+        chosen = rect
         redrawOverlay()
     }
 
@@ -271,16 +295,22 @@ final class CropTool: EditorTool {
     }
 
     func apply() {
-        let frame = CGRect(
+        var frame = CGRect(
             x: rect.minX.rounded(), y: rect.minY.rounded(), width: max(rect.width.rounded(), 1),
             height: max(rect.height.rounded(), 1)
         )
+        if model.straighten != 0, rect.width > 4, rect.height > 4 {
+            // Whole pixels, rounded inward: rounding outward would let a sliver of emptiness back into a corner.
+            let x0 = rect.minX.rounded(.up), y0 = rect.minY.rounded(.up)
+            frame = CGRect(x: x0, y: y0, width: max(rect.maxX.rounded(.down) - x0, 1), height: max(rect.maxY.rounded(.down) - y0, 1))
+        }
         guard frame != document.bounds || model.straighten != 0 else { return }
         let angle = model.straighten * .pi / 180
         canvas.setPreviewRotation(0, about: .zero)
         document.crop(to: frame, angle: angle)
         model.straighten = 0
         rect = document.bounds
+        chosen = rect
         canvas.fit()
     }
 
@@ -647,46 +677,177 @@ final class PickerTool: EditorTool {
 
 // MARK: - Objects
 
+/// Text and speech bubbles. Both are typed straight onto the picture.
 final class TextTool: EditorTool {
     private lazy var frame = FrameInteraction(editor: editor)
+    private var session: TextEditingSession?
+    /// A press on existing text: a move if the pointer travels, a wish to type if it does not.
+    private var pressed: CGPoint?
+    private var isSelectingText = false
+    /// A bubble being pulled out: from the spot it points at to where it will sit.
+    private var bubble: (tip: CGPoint, place: CGPoint)?
+
+    override var holdsKeyboard: Bool { session != nil }
+
+    /// Starts typing into a text layer, with the caret at a point or with everything selected.
+    func beginEditing(_ id: LayerID, at point: CGPoint? = nil) {
+        endEditing()
+        document.setActiveLayer(id)
+        session = TextEditingSession(editor: editor, layerID: id, caretAt: point)
+        session?.onEnd = { [weak self] in
+            self?.session = nil
+            self?.redrawOverlay()
+        }
+        redrawOverlay()
+    }
+
+    func endEditing() {
+        session?.end()
+        session = nil
+    }
+
+    /// Types into the text being edited, or selects part of it. For scripted scenarios.
+    func type(_ string: String) {
+        session?.insert(string)
+    }
+
+    func select(_ range: NSRange) {
+        session?.select(range)
+    }
+
+    override func deactivate() {
+        endEditing()
+        bubble = nil
+    }
+
+    override func documentDidChange() {
+        session?.documentDidChange()
+    }
 
     override func mouseDown(at point: CGPoint, event: NSEvent) {
+        if let session {
+            // The handles sit on the corners of the box, so they come before the text inside it.
+            if frame.beginHandleDrag(at: point) { return }
+            if session.mouseDown(at: point, event: event) {
+                isSelectingText = true
+                return
+            }
+            // A click anywhere else finishes the text, as in every editor.
+            endEditing()
+            return
+        }
         if document.activeLayer?.text != nil, frame.beginHandleDrag(at: point) { return }
         if let hit = layer(at: point), hit.text != nil {
             document.setActiveLayer(hit.id)
             frame.beginMove(at: point)
-            if event.clickCount == 2 { model.focusesTextEditor = true }
+            pressed = point
             return
         }
-        var text = model.textDefaults
-        text.color = model.primaryColor
-        var layer = Layer(name: "Text", content: .text(text))
-        let size = layer.localBounds.size
-        layer.transform = CGAffineTransform(translationX: point.x - size.width / 2, y: point.y - size.height / 2)
-        document.addLayer(layer, name: "Add Text")
-        model.focusesTextEditor = true
+        if model.tool == .callout {
+            bubble = (point, point)
+        } else {
+            addText(at: point)
+        }
     }
 
     override func mouseDragged(to point: CGPoint, event: NSEvent) {
-        frame.drag(to: point, event: event)
+        if isSelectingText {
+            session?.mouseDragged(to: point)
+        } else if let tip = bubble?.tip {
+            bubble = (tip, point)
+            redrawOverlay()
+        } else {
+            frame.drag(to: point, event: event)
+        }
     }
 
     override func mouseUp(at point: CGPoint, event: NSEvent) {
+        if isSelectingText {
+            isSelectingText = false
+            return
+        }
+        if let bubble {
+            self.bubble = nil
+            addBubble(tip: bubble.tip, at: point)
+            return
+        }
         frame.end()
+        // A click on text that did not turn into a move puts the caret there.
+        if let pressed, pressed.distance(to: point) * canvas.scale < 3, let id = document.activeLayerID,
+           document.activeLayer?.text != nil {
+            beginEditing(id, at: point)
+        }
+        pressed = nil
+    }
+
+    private func addText(at point: CGPoint) {
+        var text = model.textDefaults
+        text.color = model.primaryColor
+        text.tail = nil
+        var layer = Layer(name: "Text", content: .text(text))
+        let size = layer.frameBounds.size
+        layer.transform = CGAffineTransform(translationX: point.x - size.width / 2, y: point.y - size.height / 2)
+        document.addLayer(layer, name: "Add Text")
+        // The placeholder is selected, so the first key replaces it.
+        beginEditing(layer.id)
+    }
+
+    /// A bubble in the primary color with its tail on `tip`. A plain click puts the bubble up and to the right.
+    private func addBubble(tip: CGPoint, at point: CGPoint) {
+        var text = model.textDefaults
+        text.string = "Text"
+        text.background = model.primaryColor
+        let fill = model.primaryColor
+        text.color = 0.299 * fill.red + 0.587 * fill.green + 0.114 * fill.blue > 0.6 ? .black : .white
+        text.outlineWidth = 0
+        text.alignment = .center
+        text.tail = .zero
+        var layer = Layer(name: "Speech Bubble", content: .text(text))
+        let size = layer.frameBounds.size
+        var center = point
+        if tip.distance(to: point) * canvas.scale < 6 {
+            let reach = max(size.height * 1.6, 60)
+            center = CGPoint(x: tip.x + reach, y: tip.y - reach)
+        }
+        let origin = CGPoint(x: center.x - size.width / 2, y: center.y - size.height / 2)
+        layer.transform = CGAffineTransform(translationX: origin.x, y: origin.y)
+        text.tail = tip - origin
+        layer.content = .text(text)
+        document.addLayer(layer, name: "Add Speech Bubble")
+        beginEditing(layer.id)
     }
 
     override func cursor(at point: CGPoint) -> NSCursor {
         if document.activeLayer?.text != nil, let cursor = frame.cursor(at: point) { return cursor }
+        if let session { return session.contains(point) ? .iBeam : .arrow }
         if let hit = layer(at: point), hit.text != nil { return .openHand }
-        return .iBeam
+        return model.tool == .callout ? .crosshair : .iBeam
     }
 
     override func drawOverlay(in context: CGContext, canvas: CanvasView) {
+        if let bubble {
+            let a = canvas.viewPoint(fromImage: bubble.tip), b = canvas.viewPoint(fromImage: bubble.place)
+            context.saveGState()
+            for (color, width) in [(CGColor.black, CGFloat(3)), (CGColor.white, CGFloat(1.5))] {
+                context.setStrokeColor(color)
+                context.setLineWidth(width)
+                context.move(to: a)
+                context.addLine(to: b)
+                context.strokePath()
+            }
+            context.restoreGState()
+        }
         if document.activeLayer?.text != nil { frame.draw(in: context, canvas: canvas) }
+        session?.draw(in: context, canvas: canvas)
     }
 
     override func keyDown(_ event: NSEvent) -> Bool {
-        editor.nudgeActiveLayer(with: event)
+        // Return on a selected text starts typing into it.
+        if event.keyCode == 36 || event.keyCode == 76, let id = document.activeLayerID, document.activeLayer?.text != nil {
+            beginEditing(id)
+            return true
+        }
+        return editor.nudgeActiveLayer(with: event)
     }
 }
 
@@ -711,7 +872,25 @@ final class ShapeTool: EditorTool {
             shape.strokeWidth = max(model.strokeWidth * 3, 14)
         }
         if model.fillsShapes, kind == .rectangle || kind == .ellipse { shape.fillColor = model.secondaryColor }
+        if kind == .badge {
+            shape.label = String(document.nextBadgeNumber)
+            shape.points = Self.badgeBox(center: point, diameter: badgeDiameter)
+        }
         return shape
+    }
+
+    /// As large as the last badge, or a size that reads well on this picture.
+    private var badgeDiameter: CGFloat {
+        model.badgeSize ?? Self.defaultBadgeDiameter(for: document.size)
+    }
+
+    static func defaultBadgeDiameter(for size: CGSize) -> CGFloat {
+        max(28, (max(size.width, size.height) / 20).rounded())
+    }
+
+    private static func badgeBox(center: CGPoint, diameter: CGFloat) -> [CGPoint] {
+        let radius = diameter / 2
+        return [CGPoint(x: center.x - radius, y: center.y - radius), CGPoint(x: center.x + radius, y: center.y + radius)]
     }
 
     override func mouseDown(at point: CGPoint, event: NSEvent) {
@@ -733,6 +912,11 @@ final class ShapeTool: EditorTool {
             if let last = shape.points.last, last.distance(to: point) * canvas.scale > 1.5 { shape.points.append(point) }
         case .line, .arrow:
             shape.points[1] = shift ? FrameInteraction.snapAngle(from: start, to: point) : point
+        case .badge:
+            // A click drops a badge of the usual size; pulling away from the spot sizes it.
+            let radius = start.distance(to: point)
+            let diameter = radius * canvas.scale > 6 ? max(radius * 2, 12) : badgeDiameter
+            shape.points = Self.badgeBox(center: start, diameter: diameter)
         case .rectangle, .ellipse:
             var end = point
             if shift {
@@ -758,6 +942,7 @@ final class ShapeTool: EditorTool {
         guard let shape = draft else { return }
         let extent = shape.pointBounds
         guard max(extent.width, extent.height) * canvas.scale > 3 else { return }
+        if shape.kind == .badge { model.badgeSize = extent.width }
         var layer = Layer(name: model.tool.title, content: .shape(shape))
         if shape.kind == .highlighter { layer.blendMode = .multiply }
         document.addLayer(layer, name: "Add \(model.tool.title)")
@@ -826,13 +1011,17 @@ final class RegionTool: EditorTool {
         guard let start else { return }
         let rect = CGRect(from: start, to: point)
         guard min(rect.width, rect.height) * canvas.scale > 4 else { return }
-        let effect: RegionEffect = model.tool == .blurRegion ? .blur : .pixelate
+        let effect = model.tool.regionEffect ?? .blur
         var region = EffectRegion(effect: effect, size: rect.size)
-        // Scale the default strength with the picture, so a 12 MP photo is not left readable.
-        region.amount = max(model.regionAmount, (max(document.size.width, document.size.height) / 110).rounded())
-        var layer = Layer(name: effect == .blur ? "Blur" : "Pixelate", content: .effect(region))
+        if effect == .spotlight {
+            region.amount = 60
+        } else {
+            // Scale the default strength with the picture, so a 12 MP photo is not left readable.
+            region.amount = max(model.regionAmount, (max(document.size.width, document.size.height) / 110).rounded())
+        }
+        var layer = Layer(name: effect.title, content: .effect(region))
         layer.transform = CGAffineTransform(translationX: rect.minX, y: rect.minY)
-        document.addLayer(layer, name: "Add \(layer.name) Area")
+        document.addLayer(layer, name: effect == .spotlight ? "Add Spotlight" : "Add \(layer.name) Area")
     }
 
     override func drawOverlay(in context: CGContext, canvas: CanvasView) {

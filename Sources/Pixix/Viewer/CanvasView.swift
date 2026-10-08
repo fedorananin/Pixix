@@ -9,6 +9,8 @@ protocol CanvasViewDelegate: AnyObject {
     /// Return true when the key was handled.
     func canvas(_ canvas: CanvasView, keyDown event: NSEvent) -> Bool
     func canvas(_ canvas: CanvasView, didReceive pasteboard: NSPasteboard, at imagePoint: CGPoint) -> Bool
+    /// The menu for a right click.
+    func canvas(_ canvas: CanvasView, menuAt imagePoint: CGPoint) -> NSMenu?
 }
 
 /// Receives pointer input in image coordinates while the editor is active.
@@ -21,6 +23,8 @@ protocol CanvasToolHandler: AnyObject {
     func toolCursor(at point: CGPoint) -> NSCursor
     func toolFlagsChanged(_ event: NSEvent)
     func drawOverlay(in context: CGContext, canvas: CanvasView)
+    /// True while a tool has the keyboard for typing, so a click on the canvas must not take it away.
+    var toolHoldsKeyboard: Bool { get }
 }
 
 /// Shows an image with zoom and pan. Coordinates are top-left based, in image pixels.
@@ -450,8 +454,12 @@ final class CanvasView: NSView {
         toolHandler != nil && !isSpaceDown
     }
 
+    override func menu(for event: NSEvent) -> NSMenu? {
+        delegate?.canvas(self, menuAt: imagePoint(fromView: convert(event.locationInWindow, from: nil)))
+    }
+
     override func mouseDown(with event: NSEvent) {
-        window?.makeFirstResponder(self)
+        if toolHandler?.toolHoldsKeyboard != true { window?.makeFirstResponder(self) }
         let location = convert(event.locationInWindow, from: nil)
         if usesTool(event) {
             toolHandler?.toolMouseDown(at: imagePoint(fromView: location), event: event)

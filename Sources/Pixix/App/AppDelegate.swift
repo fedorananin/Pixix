@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var controllers: [ViewerWindowController] = []
     private var settingsWindow: NSWindow?
     private var didOpenFiles = false
+    private var didPlanSnapshot = false
     private let launchOptions = LaunchOptions()
 
     // MARK: Lifecycle
@@ -45,8 +46,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         // Files from Finder arrive through `application(_:open:)`, possibly a moment after launch.
         DispatchQueue.main.async { [self] in
-            if controllers.isEmpty, !didOpenFiles { makeController().showWindow(nil) }
-            NSApp.activate()
+            if controllers.isEmpty, !didOpenFiles { present(makeController()) }
+            // A diagnostic run must not take the keyboard away from whoever is at the machine.
+            if !launchOptions.isUnattended { NSApp.activate() }
         }
     }
 
@@ -57,6 +59,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Quitting with unsaved edits asks about each of them; the app then quits once its windows are gone.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // Nobody is there to answer in a diagnostic run, and its edits are throwaway.
+        if launchOptions.isUnattended { return .terminateNow }
         let unsaved = controllers.filter { $0.editor?.isDirty == true }
         guard !unsaved.isEmpty else { return .terminateNow }
         for controller in controllers where controller.editor?.isDirty != true {
@@ -77,8 +81,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func makeController() -> ViewerWindowController {
         let controller = ViewerWindowController()
+        if launchOptions.isUnattended, let window = controller.window {
+            // A diagnostic run draws its window where no screen is: nothing appears in front of the person at the
+            // machine, and nothing can be clicked by accident. The place must not be remembered for real launches.
+            window.setFrameAutosaveName("")
+            window.setFrameOrigin(Self.offscreen)
+            // macOS keeps a corner of every window on a screen, so that corner is made invisible and untouchable.
+            // A snapshot draws the views themselves and is not affected.
+            window.alphaValue = 0
+            window.hasShadow = false
+            window.ignoresMouseEvents = true
+        } else if let neighbor = controllers.last?.window, let window = controller.window {
+            // Another window opens a step down and to the right of the newest one, not exactly on top of it.
+            window.setFrame(neighbor.frame, display: false)
+            _ = window.cascadeTopLeft(from: neighbor.cascadeTopLeft(from: .zero))
+        }
         controllers.append(controller)
         return controller
+    }
+
+    private static let offscreen = NSPoint(x: -30000, y: -30000)
+
+    /// Puts a window on screen, or for a diagnostic run brings it to life out of sight.
+    private func present(_ controller: ViewerWindowController) {
+        guard launchOptions.isUnattended, let window = controller.window else {
+            controller.showWindow(nil)
+            return
+        }
+        window.orderBack(nil)
+        // Showing a window may pull it back onto a screen.
+        window.setFrameOrigin(Self.offscreen)
+    }
+
+    /// The window that should show these files.
+    private func controller(for urls: [URL]) -> ViewerWindowController {
+        // A window with nothing in it is there to be filled.
+        if let empty = controllers.first(where: { !$0.isEditing && $0.currentURL == nil }) { return empty }
+        // Opening what is already on screen brings that window forward.
+        if urls.count == 1, let showing = controllers.first(where: { !$0.isEditing && $0.currentURL == urls[0] }) {
+            return showing
+        }
+        // Never pull the rug from under an editing session.
+        if !Settings.shared.opensNewWindows, let viewing = controllers.first(where: { !$0.isEditing }) { return viewing }
+        return makeController()
     }
 
     func controllerDidClose(_ controller: ViewerWindowController) {
@@ -90,9 +135,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         didOpenFiles = true
         trace("open \(urls.count) file(s)")
         prefetch(urls)
-        // Reuse a window that is only viewing; never pull the rug from under an editing session.
-        let controller = controllers.first { !$0.isEditing } ?? makeController()
-        if let snapshot = launchOptions.snapshotURL, controller.onFirstImage == nil {
+        let controller = controller(for: urls)
+        // Only the first window of a run is photographed; a scenario may open more.
+        if let snapshot = launchOptions.snapshotURL, controller.onFirstImage == nil, !didPlanSnapshot {
+            didPlanSnapshot = true
             controller.onFirstImage = { [weak self, weak controller] in
                 guard let self, let controller else { return }
                 self.launchOptions.reportFirstFrame()
@@ -108,13 +154,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         trace("window ready")
         controller.open(urls)
-        controller.showWindow(nil)
-        trace("window shown")
+        present(controller)
+        trace("window shown at \(Int(controller.window?.frame.minX ?? 0)),\(Int(controller.window?.frame.minY ?? 0))\(controller.window?.screen == nil ? ", off screen" : "")")
+    }
+
+    /// Shows a file in a window of its own, next to whatever else is open, whatever Settings says.
+    func openInNewWindow(_ url: URL) {
+        let controller = makeController()
+        controller.open([url])
+        present(controller)
+    }
+
+    @objc func newWindow(_ sender: Any?) {
+        let front = controllers.first { $0.window?.isKeyWindow == true } ?? controllers.last
+        if let url = front?.currentURL {
+            // A second look at the same picture, to compare it with another or with an edit in progress.
+            openInNewWindow(url)
+        } else {
+            present(makeController())
+        }
     }
 
     func newWindow(pasting image: CGImage) {
         let controller = controllers.first { !$0.isEditing && $0.currentURL == nil } ?? makeController()
-        controller.showWindow(nil)
+        present(controller)
         controller.openPastedImage(image)
     }
 
@@ -124,7 +187,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.image, ProjectFile.contentType]
         panel.allowsMultipleSelection = true
-        panel.canChooseDirectories = false
+        panel.canChooseDirectories = true
         panel.treatsFilePackagesAsDirectories = false
         guard panel.runModal() == .OK else { return }
         open(panel.urls)
@@ -210,23 +273,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: Diagnostics
 
+    /// Ends a snapshot run at once. An ordinary quit waits for an open sheet or popover to be dealt with,
+    /// and in a run nobody is watching that wait would never end.
+    private static func leaveAfterSnapshot() -> Never {
+        exit(0)
+    }
+
     /// Writes what the window shows to a PNG and quits. Used to check the interface without a person looking.
     private func takeSnapshot(of controller: ViewerWindowController, to url: URL) {
         DispatchQueue.main.asyncAfter(deadline: .now() + launchOptions.snapshotDelay) { [self] in
             if launchOptions.startsEditing, !controller.isEditing {
                 controller.beginEditing()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [self] in
-                    launchOptions.script?(controller)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                        controller.writeSnapshot(to: url)
-                        NSApp.terminate(nil)
+                    let finish: @MainActor () -> Void = {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                            controller.writeSnapshot(to: url)
+                            Self.leaveAfterSnapshot()
+                        }
                     }
+                    if let script = launchOptions.script { script(controller, finish) } else { finish() }
                 }
                 return
             }
-            if !launchOptions.startsEditing { launchOptions.script?(controller) }
-            controller.writeSnapshot(to: url)
-            NSApp.terminate(nil)
+            let finish: @MainActor () -> Void = {
+                controller.writeSnapshot(to: url)
+                Self.leaveAfterSnapshot()
+            }
+            if !launchOptions.startsEditing, let script = launchOptions.script { script(controller, finish) } else { finish() }
         }
     }
 }
@@ -241,8 +314,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 ///     Pixix --close photo.jpg              close the window once the picture is up; the app must exit by itself
 ///     Pixix --snapshot out.png photo.jpg   save a picture of the window and exit
 ///     Pixix --snapshot out.png --edit --demo meme photo.jpg   the same, in the editor, after a scripted scenario
-///                                          (meme, tools, crop, crop-applied, select, effect, export)
-///     Pixix --snapshot out.png --demo mouse photo.jpg         the viewer after a scripted run of the wheel and side buttons
+///     Pixix --snapshot out.png --demo mouse photo.jpg         the viewer after a scripted scenario
+///                                          (the scenarios are listed in Diagnostics.swift)
 @MainActor
 final class LaunchOptions {
     var files: [URL] = []
@@ -254,8 +327,13 @@ final class LaunchOptions {
     var closesAfterFirstFrame = false
     enum DefaultsAction { case register, restore }
     var defaultsAction: DefaultsAction?
-    var script: ((ViewerWindowController) -> Void)?
+    /// A scripted scenario. It calls the closure it is given once the window is ready to be photographed.
+    var script: ((ViewerWindowController, @escaping @MainActor () -> Void) -> Void)?
     private var didReport = false
+
+    /// True for runs made from a terminal to measure or photograph the app. They show nothing on screen,
+    /// never take the keyboard and never stop to ask a question.
+    var isUnattended: Bool { snapshotURL != nil || reportsTiming || quitsAfterFirstFrame || closesAfterFirstFrame }
 
     init() {
         var arguments = Array(CommandLine.arguments.dropFirst())
@@ -270,7 +348,7 @@ final class LaunchOptions {
                 startsEditing = true
             case "--demo":
                 let name = arguments.isEmpty ? "meme" : arguments.removeFirst()
-                script = { $0.runDemoScript(name) }
+                script = { $0.runDemoScript(name, done: $1) }
             case "--timing":
                 reportsTiming = true
             case "--quit":

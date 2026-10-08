@@ -18,6 +18,19 @@ public struct ImageDetails: Sendable {
     }
 
     public var sections: [Section]
+    /// Where the picture was taken, in degrees; south and west are negative.
+    public var coordinate: Coordinate?
+
+    public struct Coordinate: Sendable, Equatable {
+        public var latitude: Double
+        public var longitude: Double
+
+        /// The place in Apple Maps.
+        public var mapsURL: URL? {
+            let place = String(format: "%.6f,%.6f", latitude, longitude)
+            return URL(string: "https://maps.apple.com/?ll=\(place)&q=\(place)")
+        }
+    }
 
     public static func read(url: URL) -> ImageDetails {
         var sections: [Section] = []
@@ -85,7 +98,50 @@ public struct ImageDetails: Sendable {
             sections.append(Section(title: "Location", rows: [
                 Row(label: "Coordinates", value: String(format: "%.5f° %@, %.5f° %@", lat, latRef, lon, lonRef)),
             ]))
+            let coordinate = Coordinate(
+                latitude: latRef.uppercased() == "S" ? -abs(lat) : lat, longitude: lonRef.uppercased() == "W" ? -abs(lon) : lon
+            )
+            return ImageDetails(sections: sections, coordinate: coordinate)
         }
         return ImageDetails(sections: sections)
+    }
+}
+
+/// How the tones of a picture are spread from dark to light, counted on a shrunken copy.
+public struct Histogram: Sendable, Equatable {
+    /// 256 counts per channel, darkest first.
+    public var red = [Int](repeating: 0, count: 256)
+    public var green = [Int](repeating: 0, count: 256)
+    public var blue = [Int](repeating: 0, count: 256)
+    public var luminance = [Int](repeating: 0, count: 256)
+
+    /// The tallest column, for scaling a drawing. The two ends are left out: a blown sky or a black frame
+    /// would otherwise flatten everything else.
+    public var peak: Int {
+        [red, green, blue, luminance].map { $0[1..<255].max() ?? 0 }.max() ?? 0
+    }
+
+    public init?(image: CGImage, maxPixel: Int = 256) {
+        let scale = min(1, Double(maxPixel) / Double(max(image.width, image.height, 1)))
+        let width = max(1, Int((Double(image.width) * scale).rounded())), height = max(1, Int((Double(image.height) * scale).rounded()))
+        guard let context = CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        context.interpolationQuality = .low
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        guard let data = context.data else { return nil }
+        let pixels = UnsafeBufferPointer(start: data.assumingMemoryBound(to: UInt8.self), count: width * height * 4)
+        for offset in stride(from: 0, to: pixels.count, by: 4) {
+            let alpha = Int(pixels[offset + 3])
+            // Transparent pixels have no tone to count.
+            guard alpha > 8 else { continue }
+            let r = min(Int(pixels[offset]) * 255 / alpha, 255), g = min(Int(pixels[offset + 1]) * 255 / alpha, 255)
+            let b = min(Int(pixels[offset + 2]) * 255 / alpha, 255)
+            red[r] += 1
+            green[g] += 1
+            blue[b] += 1
+            luminance[(r * 299 + g * 587 + b * 114) / 1000] += 1
+        }
     }
 }

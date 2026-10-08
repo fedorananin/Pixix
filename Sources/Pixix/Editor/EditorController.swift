@@ -17,6 +17,11 @@ final class EditorController: CanvasToolHandler {
     let sourceProperties: [CFString: Any]?
     /// True for content that never existed on disk in this form, such as a pasted picture.
     private var startsUnsaved: Bool
+    /// True until the first Save: the file on disk is still what it was before this session touched it.
+    private(set) var fileIsUntouched: Bool
+    /// Small pictures of the layers for the panel, redrawn a moment after the document settles.
+    private(set) var thumbnails: [LayerID: CGImage] = [:]
+    private var thumbnailWork: DispatchWorkItem?
 
     private var tool: EditorTool!
     private var buffers: [PixelBuffer] = []
@@ -35,6 +40,7 @@ final class EditorController: CanvasToolHandler {
         self.fileURL = fileURL
         self.sourceProperties = properties
         self.startsUnsaved = startsUnsaved
+        fileIsUntouched = fileURL != nil
         model.controller = self
         tool = makeTool(model.tool)
         document.onChange = { [weak self] change in self?.documentDidChange(change) }
@@ -46,6 +52,8 @@ final class EditorController: CanvasToolHandler {
     func markSaved(url: URL) {
         fileURL = url
         startsUnsaved = false
+        // From here on the file holds this session's own work.
+        fileIsUntouched = false
         document.history.markSaved()
         host.window?.isDocumentEdited = false
     }
@@ -74,6 +82,7 @@ final class EditorController: CanvasToolHandler {
 
     func deactivate() {
         tool.deactivate()
+        thumbnailWork?.cancel()
         selectionOverlay.stop()
         document.onChange = nil
         document.history.onChange = nil
@@ -148,8 +157,28 @@ final class EditorController: CanvasToolHandler {
             model.revision += 1
             selectionOverlay.update()
             host.updateTitle()
+            tool.documentDidChange()
         }
         canvas.setOverlayNeedsDisplay()
+        scheduleThumbnails()
+    }
+
+    /// Redraws the layer pictures once the document has been still for a moment, so a drag or a brush
+    /// stroke does not pay for them on every step.
+    private func scheduleThumbnails() {
+        thumbnailWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            var fresh: [LayerID: CGImage] = [:]
+            // Text, shapes and areas are told apart by their symbols; only pictures need a picture.
+            for layer in self.document.layers where layer.isRaster {
+                fresh[layer.id] = self.document.thumbnail(ofLayer: layer.id, maxPixel: 96)
+            }
+            self.thumbnails = fresh
+            self.model.thumbnailRevision += 1
+        }
+        thumbnailWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + (thumbnails.isEmpty ? 0.05 : 0.3), execute: work)
     }
 
     func viewportDidChange() {
@@ -168,10 +197,22 @@ final class EditorController: CanvasToolHandler {
         case .fill: FillTool(editor: self)
         case .gradient: GradientTool(editor: self)
         case .picker: PickerTool(editor: self)
-        case .text: TextTool(editor: self)
-        case .arrow, .line, .rectangle, .ellipse, .pen, .highlighter: ShapeTool(editor: self)
-        case .blurRegion, .pixelateRegion: RegionTool(editor: self)
+        case .text, .callout: TextTool(editor: self)
+        case .badge, .arrow, .line, .rectangle, .ellipse, .pen, .highlighter: ShapeTool(editor: self)
+        case .blurRegion, .pixelateRegion, .spotlightRegion: RegionTool(editor: self)
         }
+    }
+
+    /// Switches to the text tool and starts typing into a text layer on the canvas.
+    func beginTextEditing(_ id: LayerID, at point: CGPoint? = nil) {
+        if !(tool is TextTool) { model.tool = .text }
+        (tool as? TextTool)?.beginEditing(id, at: point)
+    }
+
+    /// Types into the text being edited on the canvas. For scripted scenarios.
+    func typeText(_ string: String, selecting range: NSRange? = nil) {
+        (tool as? TextTool)?.type(string)
+        if let range { (tool as? TextTool)?.select(range) }
     }
 
     func toolDidChange(from old: ToolKind) {
@@ -205,6 +246,7 @@ final class EditorController: CanvasToolHandler {
     func toolMouseMoved(to point: CGPoint, event: NSEvent) { tool.mouseMoved(to: point, event: event) }
     func toolCursor(at point: CGPoint) -> NSCursor { tool.cursor(at: point) }
     func toolFlagsChanged(_ event: NSEvent) {}
+    var toolHoldsKeyboard: Bool { tool.holdsKeyboard }
     func drawOverlay(in context: CGContext, canvas: CanvasView) { tool.drawOverlay(in: context, canvas: canvas) }
 
     // MARK: Keyboard
@@ -330,8 +372,9 @@ final class EditorController: CanvasToolHandler {
             var text = model.textDefaults
             text.string = string
             text.color = model.primaryColor
+            text.tail = nil
             var layer = Layer(name: "Text", content: .text(text))
-            let size = layer.localBounds.size
+            let size = layer.frameBounds.size
             layer.transform = CGAffineTransform(translationX: center.x - size.width / 2, y: center.y - size.height / 2)
             document.addLayer(layer, name: "Paste Text")
             didAddObject()
@@ -407,6 +450,73 @@ final class EditorController: CanvasToolHandler {
         canvas.fit()
     }
 
+    /// Puts pictures under the canvas or beside it, each scaled to span that side.
+    func appendImages(from urls: [URL], to edge: CanvasEdge) {
+        var added = false
+        for url in urls {
+            guard let image = try? ImageSource(url: url).image() else { continue }
+            if document.appendImage(image, name: url.deletingPathExtension().lastPathComponent, to: edge) != nil {
+                added = true
+            } else {
+                host.showToast("The picture would grow past \(PixelBuffer.maxDimension) px")
+            }
+        }
+        guard added else { return }
+        didAddObject()
+        canvas.fit()
+    }
+
+    // MARK: Subject
+
+    /// Selects what the picture is of: the active picture layer when there is one, else everything visible.
+    func selectSubject() {
+        let layer = document.activeLayer?.isRaster == true ? document.activeLayerID : nil
+        findSubject(in: layer) { [weak self] selection in
+            self?.document.setSelection(selection, name: "Select Subject")
+        }
+    }
+
+    /// Makes everything around the subject of the active picture layer transparent.
+    func removeBackground() {
+        guard let layer = document.activeLayer, layer.isRaster, !layer.isLocked else {
+            host.showToast("Select a picture layer first")
+            return
+        }
+        findSubject(in: layer.id) { [weak self] selection in
+            self?.document.eraseOutside(selection, layer: layer.id, name: "Remove Background")
+        }
+    }
+
+    private var isFindingSubject = false
+
+    private func findSubject(in layer: LayerID?, then use: @escaping (Selection) -> Void) {
+        guard !isFindingSubject, let image = document.image(ofLayer: layer) else { return }
+        isFindingSubject = true
+        let size = document.size
+        host.showToast("Looking for the subject…")
+        Task { [weak self] in
+            let found = await Task.detached(priority: .userInitiated) { () -> Result<Data?, Error> in
+                Result { try SubjectFinder.mask(for: image) }
+            }.value
+            guard let self else { return }
+            self.isFindingSubject = false
+            // The picture may have been cropped or closed while the search ran.
+            guard self.host.editor === self, self.document.size == size else { return }
+            switch found {
+            case .success(let coverage?):
+                guard let selection = Selection(coverage: coverage, width: Int(size.width), height: Int(size.height)),
+                      !selection.isEmpty
+                else { fallthrough }
+                use(selection)
+                self.host.showToast("Subject found")
+            case .success:
+                self.host.showToast("Nothing in this picture stands out as a subject")
+            case .failure(let error):
+                self.host.present(error)
+            }
+        }
+    }
+
     // MARK: Menu validation
 
     private static let editorActions: Set<Selector> = [
@@ -424,6 +534,8 @@ final class EditorController: CanvasToolHandler {
         #selector(ViewerWindowController.moveLayerDown(_:)), #selector(ViewerWindowController.rasterizeLayer(_:)),
         #selector(ViewerWindowController.applyEffect(_:)), #selector(ViewerWindowController.saveProjectAs(_:)),
         #selector(ViewerWindowController.fillSelection(_:)), #selector(ViewerWindowController.selectTool(_:)),
+        #selector(ViewerWindowController.selectSubject(_:)), #selector(ViewerWindowController.removeBackground(_:)),
+        #selector(ViewerWindowController.addImageBelow(_:)), #selector(ViewerWindowController.addImageToTheRight(_:)),
     ]
 
     /// True for commands that only make sense while editing.
@@ -456,7 +568,7 @@ final class EditorController: CanvasToolHandler {
             return layer.effectRegion == nil && !layer.isAligned(to: document.size)
         case #selector(ViewerWindowController.flattenImage(_:)):
             return document.layers.count > 1 || layer?.isRaster == false
-        case #selector(ViewerWindowController.applyEffect(_:)):
+        case #selector(ViewerWindowController.applyEffect(_:)), #selector(ViewerWindowController.removeBackground(_:)):
             return layer?.isRaster == true
         case #selector(ViewerWindowController.selectTool(_:)):
             if let raw = menuItem?.representedObject as? String { menuItem?.state = raw == model.tool.rawValue ? .on : .off }

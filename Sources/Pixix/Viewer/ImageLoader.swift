@@ -24,6 +24,8 @@ final class ImageLoader {
 
     private let cache = NSCache<NSString, Box>()
     private var tasks: [String: Task<LoadedImage, Error>] = [:]
+    /// What each window still needs. A decode goes on for as long as any window wants it.
+    private var wanted: [ObjectIdentifier: Set<URL>] = [:]
 
     private init() {
         let memory = ProcessInfo.processInfo.physicalMemory
@@ -74,17 +76,33 @@ final class ImageLoader {
         }
     }
 
-    /// Cancels decodes that are no longer wanted.
-    func cancelAll(except keep: Set<URL>) {
+    /// Says which files a window needs now, and cancels the decodes that no window needs any more.
+    func setWanted(_ urls: Set<URL>, by owner: AnyObject) {
+        wanted[ObjectIdentifier(owner)] = urls
+        let keep = wanted.values.reduce(into: Set<URL>()) { $0.formUnion($1) }
         let keepKeys = Set(keep.flatMap { [key($0, full: true), key($0, full: false)] })
         for (taskKey, task) in tasks where !keepKeys.contains(taskKey) {
             task.cancel()
         }
     }
 
+    /// A window that closed wants nothing.
+    func forget(_ owner: AnyObject) {
+        wanted[ObjectIdentifier(owner)] = nil
+    }
+
     func invalidate(_ url: URL) {
         cache.removeObject(forKey: key(url, full: true) as NSString)
         cache.removeObject(forKey: key(url, full: false) as NSString)
+    }
+
+    /// Carries what is cached for a file over to its new name.
+    func move(_ old: URL, to new: URL) {
+        for full in [true, false] {
+            guard let box = cache.object(forKey: key(old, full: full) as NSString) else { continue }
+            cache.setObject(box, forKey: key(new, full: full) as NSString, cost: box.value.cost)
+            cache.removeObject(forKey: key(old, full: full) as NSString)
+        }
     }
 
     private nonisolated static func decode(_ url: URL, maxPixel: Int?) throws -> LoadedImage {

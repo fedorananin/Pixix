@@ -18,6 +18,24 @@ extension CGRect {
         self.init(x: min(a.x, b.x), y: min(a.y, b.y), width: abs(a.x - b.x), height: abs(a.y - b.y))
     }
 
+    /// The rectangle shrunk about its center, keeping its proportions, until it fits inside `bounds` when
+    /// turned by `angle` about its center. Unchanged when it already fits, or when its center is outside `bounds`.
+    public func shrunkToFit(_ bounds: CGRect, turnedBy angle: CGFloat) -> CGRect {
+        guard width > 0, height > 0, bounds.contains(center) else { return self }
+        let turn = CGAffineTransform(rotationAngle: angle)
+        var factor: CGFloat = 1
+        for (sx, sy) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+            let reach = CGPoint(x: width / 2 * sx, y: height / 2 * sy).applying(turn)
+            if reach.x > 0 { factor = min(factor, (bounds.maxX - midX) / reach.x) }
+            if reach.x < 0 { factor = min(factor, (bounds.minX - midX) / reach.x) }
+            if reach.y > 0 { factor = min(factor, (bounds.maxY - midY) / reach.y) }
+            if reach.y < 0 { factor = min(factor, (bounds.minY - midY) / reach.y) }
+        }
+        guard factor < 1 else { return self }
+        let size = CGSize(width: width * factor, height: height * factor)
+        return CGRect(x: midX - size.width / 2, y: midY - size.height / 2, width: size.width, height: size.height)
+    }
+
     /// Mirrors a rectangle between y-down and y-up coordinates of a space with the given height.
     func flipped(height: CGFloat) -> CGRect {
         CGRect(x: minX, y: height - maxY, width: width, height: self.height)

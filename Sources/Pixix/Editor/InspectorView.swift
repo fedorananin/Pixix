@@ -7,7 +7,7 @@ import SwiftUI
 struct InspectorView: View {
     @Bindable var model: EditorModel
     let editor: EditorController
-    @FocusState private var textFocused: Bool
+    @FocusState private var nameFocused: Bool
 
     private var document: Document { editor.document }
 
@@ -31,11 +31,9 @@ struct InspectorView: View {
         .controlSize(.small)
         .frame(width: 272)
         .background(Color(nsColor: NSColor(white: 0.15, alpha: 1)))
-        .onChange(of: model.focusesTextEditor) { _, wants in
-            if wants {
-                textFocused = true
-                model.focusesTextEditor = false
-            }
+        .onChange(of: nameFocused) { _, focused in
+            // Clicking anywhere else accepts the name, as in Finder.
+            if !focused { commitRename() }
         }
     }
 
@@ -91,13 +89,9 @@ struct InspectorView: View {
     private func textBinding<Value>(_ name: String, _ path: WritableKeyPath<TextContent, Value>, default fallback: Value) -> Binding<Value> {
         layerBinding(name, key: "text-\(name)", default: fallback, get: { $0.text?[keyPath: path] }) { layer, value in
             guard var text = layer.text else { return }
-            let before = layer.localBounds
             text[keyPath: path] = value
-            layer.content = .text(text)
-            // Keep the box centered where it was, so typing does not walk the text across the picture.
-            let after = layer.localBounds
-            let shift = CGAffineTransform(translationX: (before.width - after.width) / 2, y: (before.height - after.height) / 2)
-            layer.transform = shift.concatenating(layer.transform)
+            // The box stays centered where it was, so a bigger font does not walk the text across the picture.
+            layer.setText(text)
             model.textDefaults[keyPath: path] = value
         }
     }
@@ -116,6 +110,11 @@ struct InspectorView: View {
             region[keyPath: path] = value
             layer.content = .effect(region)
         }
+    }
+
+    /// A shadow is stored as "none" or a radius; a slider wants a plain number, with zero for none.
+    private func shadowBinding(_ source: Binding<Double?>) -> Binding<Double> {
+        Binding(get: { source.wrappedValue ?? 0 }, set: { source.wrappedValue = $0 > 0.5 ? $0 : nil })
     }
 
     private func colorBinding(_ source: Binding<RGBAColor>) -> Binding<Color> {
@@ -192,7 +191,17 @@ struct InspectorView: View {
             Toggle("Sample all layers", isOn: $model.sampleAllLayers)
             hint("Click to set the primary color. Hold Option for the secondary color.")
         case .text:
-            hint("Click the picture to add text, then type in the box below. Click existing text to edit it.")
+            hint("Click the picture and type. Click text that is already there to change it, or drag it to move it. Esc or a click elsewhere finishes.")
+        case .callout:
+            colorRow
+            hint("Drag from what the bubble should point at to where it should sit, then type. The round handle moves the tip of the tail.")
+        case .badge:
+            colorRow
+            slider("Size", value: Binding(
+                get: { model.badgeSize ?? ShapeTool.defaultBadgeDiameter(for: document.size) },
+                set: { model.badgeSize = $0 }
+            ), in: 12...400)
+            hint("Each click adds the next number. Drag to set the size as you place it.")
         case .arrow, .line, .rectangle, .ellipse, .pen, .highlighter:
             colorRow
             slider("Width", value: $model.strokeWidth, in: 1...80)
@@ -205,6 +214,8 @@ struct InspectorView: View {
             hint("Hold Shift to keep lines at 45° steps and boxes square.")
         case .blurRegion, .pixelateRegion:
             hint("Drag over the part to hide. The area stays movable and resizable, and its strength can be changed below.")
+        case .spotlightRegion:
+            hint("Drag over the part to point out. Everything else gets darker. Several spotlights work together.")
         }
     }
 
@@ -280,9 +291,9 @@ struct InspectorView: View {
     private func layerTitle(_ layer: Layer) -> String {
         switch layer.content {
         case .raster: "Layer"
-        case .text: "Text"
-        case .shape: "Shape"
-        case .effect(let region): region.effect == .blur ? "Blur Area" : "Pixelate Area"
+        case .text(let text): text.tail == nil ? "Text" : "Speech Bubble"
+        case .shape(let shape): shape.kind == .badge ? "Number Badge" : "Shape"
+        case .effect(let region): region.effect == .spotlight ? "Spotlight" : "\(region.effect.title) Area"
         }
     }
 
@@ -297,7 +308,6 @@ struct InspectorView: View {
                 .scrollContentBackground(.hidden)
                 .padding(4)
                 .background(Color.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 5))
-                .focused($textFocused)
             Picker("Font", selection: textBinding("Font", \.fontName, default: "Helvetica Neue")) {
                 if !Self.fontFamilies.contains(text.fontName) { Text(text.fontName).tag(text.fontName) }
                 ForEach(Self.fontFamilies, id: \.self) { Text($0).tag($0) }
@@ -321,6 +331,7 @@ struct InspectorView: View {
             if text.outlineWidth > 0 {
                 ColorPicker("Outline color", selection: colorBinding(textBinding("Outline Color", \.outlineColor, default: .black)))
             }
+            slider("Shadow", value: shadowBinding(textBinding("Shadow", \.shadow, default: nil)), in: 0...60, onEnd: endInteraction)
             Toggle("Background", isOn: Binding(
                 get: { text.background != nil },
                 set: { on in
@@ -338,7 +349,21 @@ struct InspectorView: View {
                 .help("Impact, white with a black outline, centered")
         case .shape(let shape):
             ColorPicker("Color", selection: colorBinding(shapeBinding("Color", \.strokeColor, default: .black)))
-            slider("Width", value: shapeBinding("Width", \.strokeWidth, default: 6), in: 0...120, onEnd: endInteraction)
+            if shape.kind == .badge {
+                HStack(spacing: 8) {
+                    Text("Label")
+                        .frame(width: 74, alignment: .leading)
+                        .foregroundStyle(.secondary)
+                    TextField("Label", text: Binding(
+                        get: { shape.label ?? "" },
+                        set: { shapeBinding("Label", \.label, default: nil).wrappedValue = String($0.prefix(3)) }
+                    ))
+                    .frame(width: 60)
+                    Spacer()
+                }
+            } else {
+                slider("Width", value: shapeBinding("Width", \.strokeWidth, default: 6), in: 0...120, onEnd: endInteraction)
+            }
             if shape.kind == .rectangle || shape.kind == .ellipse {
                 Toggle("Fill", isOn: Binding(
                     get: { shape.fillColor != nil },
@@ -353,14 +378,21 @@ struct InspectorView: View {
             if shape.kind == .rectangle {
                 slider("Corners", value: shapeBinding("Corners", \.cornerRadius, default: 0), in: 0...300, onEnd: endInteraction)
             }
-        case .effect:
-            Picker("Effect", selection: regionBinding("Effect", \.effect, default: .blur)) {
-                Text("Blur").tag(RegionEffect.blur)
-                Text("Pixelate").tag(RegionEffect.pixelate)
+            if shape.kind != .highlighter {
+                slider("Shadow", value: shadowBinding(shapeBinding("Shadow", \.shadow, default: nil)), in: 0...60, onEnd: endInteraction)
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            slider("Strength", value: regionBinding("Strength", \.amount, default: 16), in: 2...200, onEnd: endInteraction)
+        case .effect(let region):
+            if region.effect == .spotlight {
+                slider("Darkness", value: regionBinding("Darkness", \.amount, default: 60), in: 10...95, onEnd: endInteraction)
+            } else {
+                Picker("Effect", selection: regionBinding("Effect", \.effect, default: .blur)) {
+                    Text("Blur").tag(RegionEffect.blur)
+                    Text("Pixelate").tag(RegionEffect.pixelate)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                slider("Strength", value: regionBinding("Strength", \.amount, default: 16), in: 2...200, onEnd: endInteraction)
+            }
             Toggle("Round", isOn: regionBinding("Shape", \.isEllipse, default: false))
         case .raster:
             EmptyView()
@@ -437,43 +469,131 @@ struct InspectorView: View {
 
     // MARK: Layers
 
-    @ViewBuilder private var layers: some View {
-        VStack(spacing: 1) {
-            ForEach(document.layers.reversed()) { layer in
-                let isActive = layer.id == document.activeLayerID
-                HStack(spacing: 6) {
-                    Button {
-                        document.updateLayer(layer.id, name: layer.isVisible ? "Hide Layer" : "Show Layer") { $0.isVisible.toggle() }
-                    } label: {
-                        Image(systemName: layer.isVisible ? "eye" : "eye.slash")
-                            .frame(width: 16)
-                            .foregroundStyle(layer.isVisible ? .primary : .tertiary)
-                    }
-                    .buttonStyle(.borderless)
-                    .help(layer.isVisible ? "Hide layer" : "Show layer")
-                    Image(systemName: layer.kindSymbol)
-                        .frame(width: 16)
-                        .foregroundStyle(.secondary)
-                    Text(layer.text.map { $0.string.isEmpty ? layer.name : $0.string.replacingOccurrences(of: "\n", with: " ") } ?? layer.name)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    Spacer(minLength: 0)
-                    Button {
-                        document.updateLayer(layer.id, name: layer.isLocked ? "Unlock Layer" : "Lock Layer") { $0.isLocked.toggle() }
-                    } label: {
-                        Image(systemName: layer.isLocked ? "lock.fill" : "lock.open")
-                            .foregroundStyle(layer.isLocked ? .primary : .quaternary)
-                    }
-                    .buttonStyle(.borderless)
-                    .help(layer.isLocked ? "Unlock layer" : "Lock layer")
-                }
-                .padding(.horizontal, 6)
-                .padding(.vertical, 5)
-                .background(isActive ? Color.accentColor.opacity(0.45) : Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 5))
-                .contentShape(Rectangle())
-                .onTapGesture { document.setActiveLayer(layer.id) }
+    /// What the list calls a layer. Text is known by what it says, until it is given a name of its own.
+    private func displayName(_ layer: Layer) -> String {
+        if let text = layer.text, layer.name == "Text" || layer.name == "Speech Bubble", !text.string.isEmpty {
+            return text.string.replacingOccurrences(of: "\n", with: " ")
+        }
+        if let shape = layer.shape, shape.kind == .badge, layer.name == ToolKind.badge.title, let label = shape.label, !label.isEmpty {
+            return "Badge \(label)"
+        }
+        return layer.name
+    }
+
+    private func beginRename(_ layer: Layer) {
+        commitRename()
+        document.setActiveLayer(layer.id)
+        model.layerNameDraft = displayName(layer)
+        model.renamingLayer = layer.id
+    }
+
+    private func commitRename() {
+        guard let id = model.renamingLayer else { return }
+        model.renamingLayer = nil
+        let name = model.layerNameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !name.isEmpty, let layer = document.layer(id), displayName(layer) != name {
+            document.updateLayer(id, name: "Rename Layer") { $0.name = name }
+        }
+        // Back to the canvas, so the tool shortcuts work again.
+        editor.canvas.window?.makeFirstResponder(editor.canvas)
+    }
+
+    private func layerPicture(_ layer: Layer) -> some View {
+        ZStack {
+            if let image = editor.thumbnails[layer.id] {
+                // A light backing, so the transparent parts of a layer read as empty.
+                Color(white: 0.72)
+                Image(decorative: image, scale: 1)
+                    .resizable()
+                    .interpolation(.medium)
+                    .aspectRatio(contentMode: .fit)
+            } else {
+                Color.white.opacity(0.07)
+                Image(systemName: layer.kindSymbol)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
             }
         }
+        .frame(width: 36, height: 27)
+        .clipShape(RoundedRectangle(cornerRadius: 3))
+    }
+
+    private func layerRow(_ layer: Layer) -> some View {
+        let isActive = layer.id == document.activeLayerID
+        let isDropTarget = model.dropTargetLayer == layer.id && model.draggedLayer != layer.id
+        return HStack(spacing: 6) {
+            Button {
+                document.updateLayer(layer.id, name: layer.isVisible ? "Hide Layer" : "Show Layer") { $0.isVisible.toggle() }
+            } label: {
+                Image(systemName: layer.isVisible ? "eye" : "eye.slash")
+                    .frame(width: 16)
+                    .foregroundStyle(layer.isVisible ? .primary : .tertiary)
+            }
+            .buttonStyle(.borderless)
+            .help(layer.isVisible ? "Hide layer" : "Show layer")
+            layerPicture(layer)
+            if model.renamingLayer == layer.id {
+                TextField("Name", text: $model.layerNameDraft)
+                    .textFieldStyle(.plain)
+                    .focused($nameFocused)
+                    .onSubmit { commitRename() }
+                    .onExitCommand {
+                        model.renamingLayer = nil
+                        editor.canvas.window?.makeFirstResponder(editor.canvas)
+                    }
+                    .onAppear { nameFocused = true }
+            } else {
+                Text(displayName(layer))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            Spacer(minLength: 0)
+            Button {
+                document.updateLayer(layer.id, name: layer.isLocked ? "Unlock Layer" : "Lock Layer") { $0.isLocked.toggle() }
+            } label: {
+                Image(systemName: layer.isLocked ? "lock.fill" : "lock.open")
+                    .foregroundStyle(layer.isLocked ? .primary : .quaternary)
+            }
+            .buttonStyle(.borderless)
+            .help(layer.isLocked ? "Unlock layer" : "Lock layer")
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .background(isActive ? Color.accentColor.opacity(0.45) : Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 5))
+        .overlay {
+            if isDropTarget { RoundedRectangle(cornerRadius: 5).strokeBorder(Color.accentColor, lineWidth: 2) }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if model.renamingLayer != layer.id { commitRename() }
+            document.setActiveLayer(layer.id)
+        }
+        .simultaneousGesture(TapGesture(count: 2).onEnded { beginRename(layer) })
+        .contextMenu {
+            Button("Rename") { beginRename(layer) }
+            Button("Duplicate") { document.duplicateLayer(layer.id) }
+            Button("Merge Down") { document.mergeDown(layer.id) }
+                .disabled(document.layers.first?.id == layer.id)
+            Divider()
+            Button("Delete", role: .destructive) { document.removeLayer(layer.id) }
+                .disabled(document.layers.count <= 1)
+        }
+        .onDrag {
+            model.draggedLayer = layer.id
+            return NSItemProvider(object: layer.id.uuidString as NSString)
+        }
+        .onDrop(of: [.text], delegate: LayerDropDelegate(target: layer.id, model: model, document: document))
+    }
+
+    @ViewBuilder private var layers: some View {
+        // Reading the revision redraws the rows when the layer pictures have been refreshed.
+        let _ = model.thumbnailRevision
+        VStack(spacing: 1) {
+            ForEach(document.layers.reversed()) { layer in
+                layerRow(layer)
+            }
+        }
+        hint("Drag a layer onto another to take its place. Double-click a name to change it.")
         HStack(spacing: 4) {
             Button { document.addEmptyLayer() } label: { Image(systemName: "plus") }
                 .help("New empty layer")
@@ -522,6 +642,39 @@ struct InspectorView: View {
             .background(isCurrent ? Color.accentColor.opacity(0.45) : .clear, in: RoundedRectangle(cornerRadius: 4))
             .contentShape(Rectangle())
             .onTapGesture(perform: action)
+    }
+}
+
+/// Reordering layers by dragging one row onto another: the dragged layer takes that row's place in the stack.
+private struct LayerDropDelegate: DropDelegate {
+    let target: LayerID
+    let model: EditorModel
+    let document: Document
+
+    func validateDrop(info: DropInfo) -> Bool { model.draggedLayer != nil }
+
+    func dropEntered(info: DropInfo) {
+        model.dropTargetLayer = target
+    }
+
+    func dropExited(info: DropInfo) {
+        if model.dropTargetLayer == target { model.dropTargetLayer = nil }
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        defer {
+            model.draggedLayer = nil
+            model.dropTargetLayer = nil
+        }
+        guard let dragged = model.draggedLayer, dragged != target,
+              let index = document.layers.firstIndex(where: { $0.id == target })
+        else { return false }
+        document.moveLayer(dragged, toIndex: index)
+        return true
     }
 }
 

@@ -57,17 +57,23 @@ choose **File › Get Info**, pick the app under **Open With** and press **Chang
 | Play or pause an animation | `Space`; `,` and `.` step frame by frame |
 | Rotate the file | `⌘R`, `⌘L` |
 | Move to Trash | `⌘⌫` or `Delete`; `⌘Z` brings it back |
-| Info | `⌘I` |
+| Rename | `F2` |
+| Duplicate, copy to a folder, move to a folder | `⇧⌘D`, `⌃⌘C`, `⌃⌘M`; all can be undone |
+| Select and copy text in the picture | Drag over it, then `⌘C`. **View › Live Text** (`⇧⌘T`) turns this on and off |
+| Info, with a histogram and a link to the place in Maps | `⌘I` |
+| Another window on the same picture | `⌥⌘N` |
 | Thumbnail strip | `⌥⌘T` |
 | Slideshow | `⇧⌘↩` |
 
-Opening one file browses its whole folder. Opening several browses just those.
+Opening one file browses its whole folder. Opening several browses just those. Opening or dropping a folder
+browses the pictures in it. Each picture opened from Finder gets a window of its own; **Settings** can make
+them share one instead. A right click on the picture brings up the commands for the file.
 
 ## Saving and converting
 
 | Command | Shortcut | What it does |
 |---|---|---|
-| Save | `⌘S` | Overwrites the file being edited, in its own format |
+| Save | `⌘S` | Overwrites the file being edited, in its own format. The first Save of a session leaves the file as it was in the Trash |
 | Save As… | `⇧⌘S` | Saves a copy; the original is untouched |
 | Save as Pixix Project… | `⌥⇧⌘S` | Saves a `.pixix` project that keeps the layers |
 | Export… | `⇧⌘E` | Format, size, quality, with the resulting file size shown live |
@@ -85,11 +91,19 @@ adjustment sliders, the layer list and the history.
 
 - **Crop** (`C`): free or fixed ratio, straighten, and drag the frame past the edge to extend the canvas.
 - **Markup**: arrow (`A`), line, rectangle (`R`), ellipse (`U`), pen (`P`), highlighter (`H`), text (`T`),
-  blur area (`J`), pixelate area (`K`). These stay editable objects until rasterized.
+  speech bubble (`Y`), numbered badge (`Q`), blur area (`J`), pixelate area (`K`), spotlight (`Z`), which
+  darkens everything around an area. These stay editable objects until rasterized, and text and shapes can
+  cast a shadow.
+- **Text** is typed straight onto the picture: click with the text tool and type; click text that is already
+  there to change it. Each click of the badge tool adds the next number.
 - **Painting**: brush (`B`), pencil (`N`), eraser (`E`), clone stamp (`S`), paint bucket (`G`), gradient (`D`),
   color picker (`I`).
 - **Selections**: rectangle (`M`), ellipse (`O`), lasso (`L`), magic wand (`W`). Shift adds, Option subtracts.
+  **Edit › Select Subject** (`⇧⌘A`) selects what the picture is of, and **Layer › Remove Background** leaves
+  only that.
 - **Layers**: drop or paste a picture to add it as a layer; move, resize and rotate it with the Move tool (`V`).
+  **Layer › Add Image Below** (`⌥⌘B`) and **Add Image to the Right** extend the canvas and put a picture there,
+  scaled to fit. In the layer list, drag a layer onto another to reorder and double-click a name to change it.
 - **Image**, **Adjustments** and **Effects** menus: resize, canvas size, rotate, flip, levels, curves, blurs,
   noise, distortions and more, each with a live preview.
 
@@ -147,6 +161,9 @@ PIXIX_TRACE=1 $APP --timing --quit photo.jpg            # the same, with launch 
 $APP --snapshot out.png photo.jpg                       # a picture of the viewer window
 $APP --snapshot out.png --edit --demo meme photo.jpg    # a picture of the editor after a scripted scenario
 ```
+
+The timing and snapshot runs are unattended: the window is kept off the screen, the app does not come to
+the front, and it quits without asking about anything.
 
 `swift Scripts/make-sample.swift photo.jpg` draws a sample picture to try these on.
 

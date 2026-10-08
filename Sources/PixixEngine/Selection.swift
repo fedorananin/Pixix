@@ -31,6 +31,12 @@ public final class Selection: @unchecked Sendable {
         )!
     }
 
+    /// A mask from ready-made coverage bytes: one per pixel, tightly packed, top row first.
+    public convenience init?(coverage: Data, width: Int, height: Int) {
+        guard width > 0, height > 0, coverage.count == width * height else { return nil }
+        self.init(width: width, height: height, data: coverage)
+    }
+
     private static func tightBounds(_ data: Data, width: Int, height: Int) -> CGRect {
         var minX = width, minY = height, maxX = -1, maxY = -1
         data.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) in
