@@ -28,6 +28,10 @@ final class CaptureAgent: NSObject, NSMenuDelegate, NSMenuItemValidation {
     private var closeObserver: NSObjectProtocol?
     private var isGrabbing = false
     private var previousApp: NSRunningApplication?
+    /// When a window of the app last went away: a viewer, Settings, an overlay, the color window.
+    private var lastWindowClose = Date.distantPast
+    /// How long after that a request to quit from another app is taken for a reaction to it.
+    private static let lastWindowQuitGrace: TimeInterval = 6
 
     // MARK: Running
 
@@ -54,8 +58,24 @@ final class CaptureAgent: NSObject, NSMenuDelegate, NSMenuItemValidation {
             forName: NSWindow.willCloseNotification, object: nil, queue: .main
         ) { _ in
             // The window still counts as open while it is closing; look again once it is gone.
-            Task { @MainActor in CaptureAgent.shared.updateDockPresence() }
+            Task { @MainActor in
+                CaptureAgent.shared.lastWindowClose = Date()
+                CaptureAgent.shared.updateDockPresence()
+            }
         }
+    }
+
+    /// True for a request to quit that is turned down. Utilities that make the Mac quit an app when its last
+    /// window closes (DockDoor has such an option) watch the windows of every app and send it Quit a second or
+    /// two after the last one is gone. Without the menu bar icon Pixix has quit by then anyway. With it, the
+    /// user has asked for the opposite: the process stays to hear the shortcuts. So a Quit that another app
+    /// sends right after a window closed is not obeyed. Quit from the menu, from the Dock, at logout, or from
+    /// any app at another moment works as ever.
+    func declinesQuit(askedBy sender: NSRunningApplication?) -> Bool {
+        guard isRunning, let sender, sender != .current, let identifier = sender.bundleIdentifier,
+              !identifier.hasPrefix("com.apple.")
+        else { return false }
+        return Date().timeIntervalSince(lastWindowClose) < Self.lastWindowQuitGrace
     }
 
     func stop() {

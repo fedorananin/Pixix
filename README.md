@@ -144,6 +144,9 @@ the shortcut you chose is one macOS still uses.
 
 Releases are signed ad hoc, so macOS may ask for the Screen Recording permission again after an update.
 
+Utilities that quit an app when its last window closes, such as DockDoor with that option on, do not take
+Pixix out of the menu bar: while screenshots or the color picker are on, Pixix turns their request down.
+
 ## Color picker
 
 Off by default, and separate from screenshots: turn on **Settings › Color Picker › Pick colors from the screen

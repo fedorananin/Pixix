@@ -10,6 +10,10 @@
 - Settings chooses which notations are shown. The values are sRGB, whatever the display.
 - Screenshots and the color picker are switched on separately; either keeps Pixix in the menu bar.
 - Settings is laid out in three pages: General, Screenshots and Color Picker.
+- **Stays in the menu bar next to utilities that quit apps.** A utility that quits an app when its last window
+  closes, such as DockDoor with that option on, used to take Pixix out of the menu bar a second after any of
+  its windows closed, shortcuts and all. Pixix now turns such a request down while screenshots or the color
+  picker are on. Quit from its own menu, from the Dock or at logout works as before.
 
 ## 0.3.0
 

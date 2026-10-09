@@ -92,6 +92,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Quitting with unsaved edits asks about each of them; the app then quits once its windows are gone.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let asker = Self.quitRequester
+        trace("asked to quit by \(asker.map { "pid \($0)" } ?? "the app itself")")
+        if CaptureAgent.shared.declinesQuit(askedBy: asker.flatMap(NSRunningApplication.init(processIdentifier:))) { return .terminateCancel }
         // Nobody is there to answer in a diagnostic run, and its edits are throwaway.
         if launchOptions.isUnattended { return .terminateNow }
         let unsaved = controllers.filter { $0.editor?.isDirty == true }
@@ -104,6 +107,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             controller.window?.performClose(nil)
         }
         return .terminateCancel
+    }
+
+    /// The process whose Quit event is being handled. Nil when the app is quitting by itself, from its own
+    /// menu or shortcut.
+    private static var quitRequester: pid_t? {
+        guard let event = NSAppleEventManager.shared().currentAppleEvent, event.eventID == kAEQuitApplication else { return nil }
+        return event.attributeDescriptor(forKeyword: keySenderPIDAttr)?.int32Value
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
