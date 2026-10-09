@@ -192,6 +192,12 @@ final class Settings {
         set { defaults.set(newValue.rawValue, forKey: "pickerCopyNotation") }
     }
 
+    /// HEX is written without its #, for pasting into a field that has one already.
+    var pickerBareHex: Bool {
+        get { defaults.bool(forKey: "pickerBareHex") }
+        set { defaults.set(newValue, forKey: "pickerBareHex") }
+    }
+
     /// The settings of the most recent export, replayed by Export Again.
     var lastExport: ExportSettings? {
         get { decode("lastExport") }

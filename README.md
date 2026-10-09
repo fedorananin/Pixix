@@ -164,12 +164,21 @@ one in the middle framed, and its color written underneath as HEX, RGB and HSL.
 | Back out | `Esc` or a right click |
 
 What a click does is chosen in Settings. **Copies the color** puts one value on the clipboard, in the notation
-picked under **Copy as**: `#1A2B3C`, `rgb(26, 43, 60)`, `hsl(210, 40%, 17%)` or `hsb(210, 57%, 24%)`. **Opens
-a window with its values** shows the color in a small floating window with every notation and a button to copy
-each; **Pick Another** there picks again into the same window.
+picked under **Copy as**. **Opens a window with its values** shows the color in a small floating window with
+every notation and a button to copy each; **Pick Another** there picks again into the same window.
 
-**Show** in Settings switches off the notations you have no use for, in the magnifier and in the window alike.
-The values are sRGB whatever the display is, so a color picked from a web page reads as the page wrote it.
+| Notation | Copied as |
+|---|---|
+| HEX | `#1A2B3C`, or `1A2B3C` with **Write HEX without the #** |
+| RGB | `rgb(26, 43, 60)` |
+| RGB 0–1 | `0.102, 0.169, 0.235`, the fractions Swift, Core Graphics and shaders take |
+| HSL | `hsl(210, 40%, 17%)` |
+| HSB | `hsb(210, 57%, 24%)` |
+| OKLCH | `oklch(28.3% 0.039 249.3)` |
+
+**Show** in Settings chooses which of them appear, in the magnifier and in the window alike; HEX, RGB and HSL
+do at first. The values are sRGB whatever the display is, so a color picked from a web page reads as the page
+wrote it.
 
 ## Building from source
 

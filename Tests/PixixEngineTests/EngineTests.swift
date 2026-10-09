@@ -603,6 +603,30 @@ func dump(_ document: Document, _ name: String) {
         #expect(ColorNotation.hex.text(of: RGBAColor(red: 1.2, green: -0.1, blue: 0.5)) == "#FF0080")
     }
 
+    @Test func fractionsAndBareHex() {
+        let navy = RGBAColor(red: 26.0 / 255, green: 43.0 / 255, blue: 60.0 / 255)
+        #expect(ColorNotation.unit.text(of: navy) == "0.102, 0.169, 0.235")
+        #expect(ColorNotation.unit.text(of: .white) == "1.000, 1.000, 1.000")
+        #expect(ColorNotation.hex.text(of: navy, bareHex: true) == "1A2B3C")
+        #expect(ColorNotation.hex.value(of: navy, bareHex: true) == "1A2B3C")
+        // Only HEX has a # to leave out.
+        #expect(ColorNotation.rgb.text(of: navy, bareHex: true) == "rgb(26, 43, 60)")
+        #expect(ColorNotation.unit.title == "0–1" && ColorNotation.unit.name == "RGB 0–1")
+        #expect(ColorNotation.oklch.title == "OKLCH" && ColorNotation.hex.name == "HEX")
+    }
+
+    @Test func oklchMatchesThePublishedValues() {
+        // The primaries as the CSS Color 4 specification and oklch.com give them.
+        #expect(ColorNotation.oklch.text(of: RGBAColor(red: 1, green: 0, blue: 0)) == "oklch(62.8% 0.258 29.2)")
+        #expect(ColorNotation.oklch.text(of: RGBAColor(red: 0, green: 1, blue: 0)) == "oklch(86.6% 0.295 142.5)")
+        #expect(ColorNotation.oklch.text(of: RGBAColor(red: 0, green: 0, blue: 1)) == "oklch(45.2% 0.313 264.1)")
+        // No chroma, no hue, and no decimals that say nothing.
+        #expect(ColorNotation.oklch.text(of: .white) == "oklch(100% 0 0)")
+        #expect(ColorNotation.oklch.text(of: .black) == "oklch(0% 0 0)")
+        #expect(ColorNotation.oklch.text(of: RGBAColor(red: 0.5, green: 0.5, blue: 0.5)) == "oklch(60% 0 0)")
+        #expect(ColorNotation.oklch.value(of: RGBAColor(red: 1, green: 0, blue: 0)) == "62.8% 0.258 29.2")
+    }
+
     @Test func partOfABufferBecomesAnImage() throws {
         let space = try #require(CGColorSpace(name: CGColorSpace.sRGB))
         let buffer = try #require(PixelBuffer(image: quadrantImage(), colorSpace: space))

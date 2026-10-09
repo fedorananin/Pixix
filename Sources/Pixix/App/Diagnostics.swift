@@ -47,7 +47,7 @@ extension ViewerWindowController {
     /// `capture-full`, `capture-window`, `capture-edit`, `capture-save`, `capture-text`, and for measuring
     /// memory `capture-open` (the overlay alone), `capture-closed` (after it is dismissed) and `capture-repeat`
     /// (eight captures in a row); for the color picker `picker` (the magnifier moved by the pointer and the
-    /// arrow keys, with the color printed at each step), `picker-closed` (after it is dismissed, for memory) and
+    /// arrow keys, with the color printed at each step), `picker-all` (the same with every notation on show), `picker-closed` (after it is dismissed, for memory) and
     /// `picker-window` (the window with the values); `settings` is the Settings window on the page of the
     /// screenshot options, `settings-colors` and `settings-general` are its other pages, and `shortcut` records
     /// shortcuts on it.
@@ -92,7 +92,7 @@ extension ViewerWindowController {
         case "capture-save":
             runCaptureSaveScript(done: done)
             return
-        case "picker", "picker-closed":
+        case "picker", "picker-all", "picker-closed":
             runPickerScript(name)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { done() }
             return
@@ -109,8 +109,14 @@ extension ViewerWindowController {
             controller.panel.orderBack(nil)
             controller.panel.setFrameOrigin(NSPoint(x: -30000, y: -30000))
             scenarioWindow = controller.panel
-            print("color window: \(controller.model.notations.map { $0.text(of: color) }.joined(separator: "  "))")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { done() }
+            // Every notation, whatever Settings shows: the picture is of the window at its fullest.
+            controller.model.notations = ColorNotation.allCases
+            print("color window: \(controller.model.notations.map(controller.model.text).joined(separator: "  "))")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                // Once the rows have been laid out again.
+                controller.panel.setContentSize(controller.panel.contentView?.fittingSize ?? .zero)
+                done()
+            }
             return
         case "settings", "settings-general", "settings-colors", "shortcut":
             // Out of sight like every scripted window, and without switching anything on.
@@ -305,6 +311,7 @@ extension ViewerWindowController {
             screen.keyDown(event)
         }
         print("picture \(Int(size.width))×\(Int(size.height)) px, \(Int(size.width / scale))×\(Int(size.height / scale)) pt")
+        if name == "picker-all" { screen.show(ColorNotation.allCases) }
         move(0.3, 0.4)
         report("pointer at 30%, 40%")
         press(124)
@@ -323,7 +330,7 @@ extension ViewerWindowController {
         move(0.62, 0.45)
         report("pointer at 62%, 45%")
         let settings = Settings.shared
-        print("a click: \(settings.pickerAction.title.lowercased()), as \(screen.color.map(settings.pickerCopyNotation.text(of:)) ?? "-"); shown \(settings.pickerNotations.map(\.title)); shortcut \(settings.pickerHotKey?.title ?? "none")")
+        print("a click: \(settings.pickerAction.title.lowercased()), as \(screen.color.map { settings.pickerCopyNotation.text(of: $0, bareHex: settings.pickerBareHex) } ?? "-"); shown \(settings.pickerNotations.map(\.title)); shortcut \(settings.pickerHotKey?.title ?? "none")")
         // Two shortcuts claimed and let go at once: a press of one must reach its own handler and no other.
         var presses = [0, 0]
         let first = GlobalHotKey(id: 1) { presses[0] += 1 }

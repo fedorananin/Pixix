@@ -71,7 +71,7 @@ final class PickerSession {
         guard !isUnattended else { return }
         switch action {
         case .copy:
-            let text = Settings.shared.pickerCopyNotation.text(of: color)
+            let text = Settings.shared.pickerCopyNotation.text(of: color, bareHex: Settings.shared.pickerBareHex)
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
             CaptureOutput.announce("Copied \(text)", swatch: color)
@@ -105,8 +105,9 @@ final class PickerScreenController: NSObject {
     private let loupe = LoupeView()
     /// The display's pixels as plain memory, in the color space they were captured in.
     private let pixels: PixelBuffer?
-    private let notations = Settings.shared.pickerNotations
+    private var notations = Settings.shared.pickerNotations
     private let copied = Settings.shared.pickerCopyNotation
+    private let bareHex = Settings.shared.pickerBareHex
     /// Where the arrow keys last sent the pointer, in the view's points.
     private var nudgedTo: CGPoint?
     private var isClosed = false
@@ -242,6 +243,13 @@ final class PickerScreenController: NSObject {
         pixel.flatMap { color(x: $0.x, y: $0.y) }
     }
 
+    /// Shows these notations instead of the ones chosen in Settings; for a picture of the magnifier at its fullest.
+    func show(_ notations: [ColorNotation]) {
+        self.notations = notations
+        loupe.setFrameSize(LoupeView.size(rows: notations.count))
+        refreshLoupe()
+    }
+
     /// Where the magnifier is, in the view's points; for checking it without a person looking.
     var loupeFrame: CGRect? { loupe.isHidden ? nil : loupe.frame }
 
@@ -257,7 +265,7 @@ final class PickerScreenController: NSObject {
         loupe.picture = pixels.makeImage(of: part)
         loupe.pictureCells = part.offsetBy(dx: -around.minX, dy: -around.minY)
         loupe.color = color
-        loupe.rows = notations.map { ($0.title, $0.value(of: color), $0 == copied) }
+        loupe.rows = notations.map { ($0.title, $0.value(of: color, bareHex: bareHex), $0 == copied) }
 
         // Below and to the right of the pointer; on the other side where the screen ends.
         let point = viewPoint(of: pixel)
@@ -378,13 +386,15 @@ final class PickerPictureView: NSView {
 /// color written out underneath.
 final class LoupeView: NSView {
     /// Pixels across and down. Odd, so that one of them is the middle.
-    static let cells = 21
+    static let cells = 25
     /// The side of an enlarged pixel in points.
     static let cell: CGFloat = 8
     private static let side = CGFloat(cells) * cell
     private static let band: CGFloat = 10
     private static let rowHeight: CGFloat = 19
     private static let padding: CGFloat = 7
+    /// Where the values start: past the longest name, OKLCH.
+    private static let valueColumn: CGFloat = 56
 
     var picture: CGImage?
     /// Where the picture sits among the cells, in cells: it fills them all except at the edge of the display.
@@ -466,10 +476,10 @@ final class LoupeView: NSView {
                 .font: NSFont.systemFont(ofSize: 10, weight: .semibold), .foregroundColor: ink.withAlphaComponent(ink.alphaComponent * 0.6),
             ])
             let value = NSAttributedString(string: row.value, attributes: [
-                .font: NSFont.monospacedSystemFont(ofSize: 11.5, weight: row.isCopied ? .semibold : .regular), .foregroundColor: ink,
+                .font: NSFont.monospacedSystemFont(ofSize: 11, weight: row.isCopied ? .semibold : .regular), .foregroundColor: ink,
             ])
             name.draw(at: CGPoint(x: 10, y: y + (Self.rowHeight - name.size().height) / 2 + 0.5))
-            value.draw(at: CGPoint(x: 40, y: y + (Self.rowHeight - value.size().height) / 2))
+            value.draw(at: CGPoint(x: Self.valueColumn, y: y + (Self.rowHeight - value.size().height) / 2))
             y += Self.rowHeight
         }
 

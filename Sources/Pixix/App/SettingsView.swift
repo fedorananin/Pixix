@@ -141,6 +141,10 @@ final class SettingsModel {
         }
     }
 
+    var pickerBareHex = Settings.shared.pickerBareHex {
+        didSet { Settings.shared.pickerBareHex = pickerBareHex }
+    }
+
     /// Shows or hides a notation. The last one stays: a magnifier with no values would say nothing.
     func setShown(_ notation: ColorNotation, _ shown: Bool) {
         let wanted = ColorNotation.allCases.filter { $0 == notation ? shown : pickerNotations.contains($0) }
@@ -368,25 +372,37 @@ struct SettingsView: View {
                     ForEach(PickerAction.allCases) { Text($0.title).tag($0) }
                 }
                 Picker("Copy as", selection: $model.pickerCopyNotation) {
-                    ForEach(model.pickerNotations) { Text(verbatim: "\($0.title)  \($0.text(of: Self.sample))").tag($0) }
+                    ForEach(model.pickerNotations) { notation in
+                        Text(verbatim: "\(notation.name)   \(notation.text(of: Self.sample, bareHex: model.pickerBareHex))").tag(notation)
+                    }
                 }
                 note("A click with ⌥ held does the other of the two. The window shows every value with a button to copy it.")
                 LabeledContent("Show") {
-                    HStack(spacing: 12) {
-                        ForEach(ColorNotation.allCases) { notation in
-                            Toggle(notation.title, isOn: Binding(
-                                get: { model.pickerNotations.contains(notation) }, set: { model.setShown(notation, $0) }
-                            ))
-                            .toggleStyle(.checkbox)
-                            // The last one on show cannot be switched off.
-                            .disabled(model.pickerNotations == [notation])
+                    Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 8) {
+                        ForEach(Self.notationRows, id: \.self) { row in
+                            GridRow {
+                                ForEach(row) { notation in
+                                    Toggle(notation.name, isOn: Binding(
+                                        get: { model.pickerNotations.contains(notation) }, set: { model.setShown(notation, $0) }
+                                    ))
+                                    .toggleStyle(.checkbox)
+                                    // The last one on show cannot be switched off.
+                                    .disabled(model.pickerNotations == [notation])
+                                }
+                            }
                         }
                     }
                 }
                 note("The values the magnifier and the window show. They are sRGB, whatever the display.")
+                Toggle("Write HEX without the #", isOn: $model.pickerBareHex)
             }
             menuBar
         }
+    }
+
+    /// The notations three to a line: all of them side by side are wider than the window.
+    private static let notationRows: [[ColorNotation]] = stride(from: 0, to: ColorNotation.allCases.count, by: 3).map {
+        Array(ColorNotation.allCases[$0..<min($0 + 3, ColorNotation.allCases.count)])
     }
 
     /// What the examples in the menu are written for.

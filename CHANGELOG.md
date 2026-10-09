@@ -4,10 +4,12 @@
 
 - **Color picker.** Switched on in Settings, with a shortcut of its own (`⇧⌘1`, or one of your choosing): the
   screen freezes and a magnifier follows the pointer, showing the pixels around it enlarged and the color of
-  the one in the middle as HEX, RGB, HSL and HSB. The arrow keys move by a single pixel.
+  the one in the middle written out. The arrow keys move by a single pixel.
 - **A click copies the color** in the notation you chose, or **opens a small window** with every value and a
   button to copy each; Settings says which, and a click with `⌥` held does the other.
-- Settings chooses which notations are shown. The values are sRGB, whatever the display.
+- **Six notations:** HEX, RGB, RGB as fractions of one (`0.102, 0.169, 0.235`, for Swift and shaders), HSL,
+  HSB and OKLCH (`oklch(28.3% 0.039 249.3)`, for newer style sheets). Settings chooses which are shown, and
+  can write HEX without its `#`. The values are sRGB, whatever the display.
 - Screenshots and the color picker are switched on separately; either keeps Pixix in the menu bar.
 - Settings is laid out in three pages: General, Screenshots and Color Picker.
 - **Stays in the menu bar next to utilities that quit apps.** A utility that quits an app when its last window

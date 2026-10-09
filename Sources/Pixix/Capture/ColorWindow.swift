@@ -10,20 +10,27 @@ import SwiftUI
 final class ColorWindowModel {
     var color: RGBAColor
     var notations: [ColorNotation]
+    var bareHex: Bool
     /// The notation copied a moment ago, so its button can say so.
     var copied: ColorNotation?
     /// False for a window made only to be photographed: its buttons then leave the clipboard and the screen alone.
     @ObservationIgnored var isLive = true
 
-    init(color: RGBAColor, notations: [ColorNotation]) {
+    init(color: RGBAColor) {
         self.color = color
-        self.notations = notations
+        notations = Settings.shared.pickerNotations
+        bareHex = Settings.shared.pickerBareHex
+    }
+
+    /// The color as the window shows it and as its button copies it.
+    func text(_ notation: ColorNotation) -> String {
+        notation.text(of: color, bareHex: bareHex)
     }
 
     func copy(_ notation: ColorNotation) {
         guard isLive else { return }
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(notation.text(of: color), forType: .string)
+        NSPasteboard.general.setString(text(notation), forType: .string)
         copied = notation
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
             if self?.copied == notation { self?.copied = nil }
@@ -51,8 +58,8 @@ struct ColorWindowView: View {
                         Text(verbatim: notation.title)
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(.secondary)
-                            .frame(width: 28, alignment: .leading)
-                        Text(verbatim: notation.text(of: model.color))
+                            .frame(width: 38, alignment: .leading)
+                        Text(verbatim: model.text(notation))
                             .font(.system(size: 13, design: .monospaced))
                             .textSelection(.enabled)
                             .lineLimit(1)
@@ -64,7 +71,7 @@ struct ColorWindowView: View {
                                 .frame(width: 18, height: 18)
                         }
                         .buttonStyle(.borderless)
-                        .help("Copy \(notation.title)")
+                        .help("Copy \(notation.name)")
                     }
                     .frame(height: 24)
                 }
@@ -77,7 +84,7 @@ struct ColorWindowView: View {
             }
         }
         .padding(12)
-        .frame(width: 250)
+        .frame(width: 330)
         .fixedSize()
     }
 }
@@ -92,7 +99,7 @@ final class ColorWindowController {
     let model: ColorWindowModel
 
     init(color: RGBAColor) {
-        model = ColorWindowModel(color: color, notations: Settings.shared.pickerNotations)
+        model = ColorWindowModel(color: color)
         panel = NSPanel(
             contentRect: .zero, styleMask: [.titled, .closable, .utilityWindow, .nonactivatingPanel], backing: .buffered,
             defer: false
@@ -114,6 +121,7 @@ final class ColorWindowController {
         if let shared, shared.panel.isVisible {
             shared.model.color = color
             shared.model.notations = Settings.shared.pickerNotations
+            shared.model.bareHex = Settings.shared.pickerBareHex
             shared.model.copied = nil
             // Once the rows have been laid out again.
             DispatchQueue.main.async { shared.fit() }
