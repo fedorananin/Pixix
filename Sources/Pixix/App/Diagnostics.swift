@@ -18,6 +18,10 @@ extension ViewerWindowController {
             overlay.writeSnapshot(to: url)
             return
         }
+        if let overlay = CaptureAgent.shared.picker?.screens.first {
+            overlay.writeSnapshot(to: url)
+            return
+        }
         let target = scenarioWindow ?? window.attachedSheet ?? infoWindow ?? window
         guard let view = target.contentView?.superview ?? target.contentView else { return }
         // Offscreen capture cannot see GPU surfaces, so show the same pixels as ordinary images for the shot.
@@ -42,8 +46,11 @@ extension ViewerWindowController {
     /// In the viewer: `mouse`, `windows`, `files`, `livetext`, `info`, `menu`, and for screenshots `capture`,
     /// `capture-full`, `capture-window`, `capture-edit`, `capture-save`, `capture-text`, and for measuring
     /// memory `capture-open` (the overlay alone), `capture-closed` (after it is dismissed) and `capture-repeat`
-    /// (eight captures in a row); `settings` is the
-    /// Settings window with the screenshot options laid out.
+    /// (eight captures in a row); for the color picker `picker` (the magnifier moved by the pointer and the
+    /// arrow keys, with the color printed at each step), `picker-closed` (after it is dismissed, for memory) and
+    /// `picker-window` (the window with the values); `settings` is the Settings window on the page of the
+    /// screenshot options, `settings-colors` and `settings-general` are its other pages, and `shortcut` records
+    /// shortcuts on it.
     /// With `--edit`: `meme`, `tools`, `markup`, `text`, `layers`, `append`, `subject`, `cutout`, `save`, `crop`,
     /// `crop-applied`, `select`, `effect`, `export`, `menu`.
     func runDemoScript(_ name: String, done: @escaping @MainActor () -> Void) {
@@ -85,12 +92,33 @@ extension ViewerWindowController {
         case "capture-save":
             runCaptureSaveScript(done: done)
             return
-        case "settings", "shortcut":
+        case "picker", "picker-closed":
+            runPickerScript(name)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { done() }
+            return
+        case "picker-window":
+            // The window a click opens, with the color of the middle of the picture, out of sight.
+            guard let (screen, size) = beginScriptedPicking() else { break }
+            screen.pointerMoved(to: CGPoint(x: size.width * 0.5 / screen.shot.scale, y: size.height * 0.5 / screen.shot.scale))
+            let color = screen.color ?? .black
+            CaptureAgent.shared.picker?.end()
+            let controller = ColorWindowController(color: color)
+            controller.model.isLive = false
+            controller.panel.alphaValue = 0
+            controller.panel.ignoresMouseEvents = true
+            controller.panel.orderBack(nil)
+            controller.panel.setFrameOrigin(NSPoint(x: -30000, y: -30000))
+            scenarioWindow = controller.panel
+            print("color window: \(controller.model.notations.map { $0.text(of: color) }.joined(separator: "  "))")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { done() }
+            return
+        case "settings", "settings-general", "settings-colors", "shortcut":
             // Out of sight like every scripted window, and without switching anything on.
             let settings = NSWindow(contentRect: .zero, styleMask: [.titled, .closable], backing: .buffered, defer: false)
             settings.isReleasedWhenClosed = false
             settings.title = "Pixix Settings"
-            settings.contentViewController = NSHostingController(rootView: SettingsView(model: SettingsModel(previewingScreenshotOptions: true)))
+            let tab: SettingsTab = name == "settings-general" ? .general : name == "settings-colors" ? .colors : .screenshots
+            settings.contentViewController = NSHostingController(rootView: SettingsView(model: SettingsModel(tab: tab, previewingOptions: true)))
             settings.alphaValue = 0
             settings.ignoresMouseEvents = true
             settings.orderBack(nil)
@@ -240,6 +268,74 @@ extension ViewerWindowController {
         shot.windows = [CGRect(x: (w * 0.1).rounded(), y: (h * 0.15).rounded(), width: (w * 0.5).rounded(), height: (h * 0.6).rounded())]
         let session = CaptureAgent.shared.beginSession(shots: [shot], unattended: true)
         return session.screens.first.map { ($0, CGSize(width: w, height: h)) }
+    }
+
+    /// A color pick on the picture in the window instead of on the screen. Like a scripted screenshot, it needs
+    /// no permission and its overlay is out of sight.
+    private func beginScriptedPicking() -> (screen: PickerScreenController, size: CGSize)? {
+        guard let image = displayed?.loaded.image else { return nil }
+        let scale = NSScreen.main?.backingScaleFactor ?? 2
+        let size = CGSize(width: image.width, height: image.height)
+        let shot = ScreenShot(frame: CGRect(x: 0, y: 0, width: size.width / scale, height: size.height / scale), image: image)
+        let session = CaptureAgent.shared.beginPicking(shots: [shot], unattended: true)
+        return session.screens.first.map { ($0, size) }
+    }
+
+    /// Moves the pointer over the picture and presses the arrow keys, through the entry points the real mouse
+    /// and keyboard use, and prints the pixel, its color in every notation and where the magnifier went.
+    private func runPickerScript(_ name: String) {
+        guard let (screen, size) = beginScriptedPicking() else { return }
+        let scale = screen.shot.scale
+        func report(_ label: String) {
+            guard let pixel = screen.pixel, let color = screen.color, let frame = screen.loupeFrame else {
+                print("\(label): nothing under the pointer")
+                return
+            }
+            let values = ColorNotation.allCases.map { $0.text(of: color) }.joined(separator: "  ")
+            print("\(label): pixel \(pixel.x),\(pixel.y)  \(values)  magnifier at \(Int(frame.minX)),\(Int(frame.minY))")
+        }
+        func move(_ x: CGFloat, _ y: CGFloat) {
+            screen.pointerMoved(to: CGPoint(x: size.width * x / scale, y: size.height * y / scale))
+        }
+        func press(_ code: UInt16, _ flags: NSEvent.ModifierFlags = []) {
+            guard let event = NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: 0, context: nil,
+                characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: code
+            ) else { return }
+            screen.keyDown(event)
+        }
+        print("picture \(Int(size.width))×\(Int(size.height)) px, \(Int(size.width / scale))×\(Int(size.height / scale)) pt")
+        move(0.3, 0.4)
+        report("pointer at 30%, 40%")
+        press(124)
+        report("→")
+        press(125, .shift)
+        report("⇧↓")
+        // The pointer has not moved since the keys did: the pixel they chose stands.
+        if let pixel = screen.pixel { screen.pointerMoved(to: CGPoint(x: (CGFloat(pixel.x) + 0.2) / scale, y: (CGFloat(pixel.y) + 0.2) / scale)) }
+        report("pointer still")
+        move(0, 0)
+        report("top-left corner")
+        press(123)
+        report("← at the edge")
+        move(1, 1)
+        report("bottom-right corner")
+        move(0.62, 0.45)
+        report("pointer at 62%, 45%")
+        let settings = Settings.shared
+        print("a click: \(settings.pickerAction.title.lowercased()), as \(screen.color.map(settings.pickerCopyNotation.text(of:)) ?? "-"); shown \(settings.pickerNotations.map(\.title)); shortcut \(settings.pickerHotKey?.title ?? "none")")
+        // Two shortcuts claimed and let go at once: a press of one must reach its own handler and no other.
+        var presses = [0, 0]
+        let first = GlobalHotKey(id: 1) { presses[0] += 1 }
+        let second = GlobalHotKey(id: 2) { presses[1] += 1 }
+        let granted = [first.register(settings.captureHotKey ?? .standard), second.register(settings.pickerHotKey ?? .pickerStandard)]
+        let delivered = second.simulatePress()
+        let afterSecond = presses
+        _ = first.simulatePress()
+        first.unregister()
+        second.unregister()
+        print("two shortcuts granted by macOS: \(granted); a press of the second delivered: \(delivered), handled \(afterSecond); then one of the first: \(presses)")
+        if name == "picker-closed" { CaptureAgent.shared.picker?.end() }
     }
 
     /// Saves a part of the picture the way the Save button does, into a folder next to the picture, and prints

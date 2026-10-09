@@ -2,7 +2,7 @@
 
 An image viewer and editor for macOS. It views photos like Windows 11 Photos, converts in a couple of clicks, and edits with layers at the level of Paint.NET. Built by Fedor Ananin for his own machine, and published as open source at <https://github.com/fedorananin/Pixix> for anyone who wants it.
 
-Status: phases 0–5 are implemented, phase 6 partly, and phase 7 (screenshots) except for what section 12 lists; section 9 has the details. Sections 1–8 describe the design as built.
+Status: phases 0–5 are implemented, phase 6 partly, and phases 7 (screenshots) and 8 (the color picker) except for what section 12 lists; section 9 has the details. Sections 1–8 describe the design as built.
 
 ## 1. Goals and non-goals
 
@@ -15,6 +15,7 @@ Goals, most important first:
 5. Layers: stack several images on top of each other, extend the canvas.
 6. A full raster editor at the level of Paint.NET.
 7. Screenshots: select a part of the screen, mark it up where it is, copy or save. An option, off by default.
+8. A color picker for the whole screen: a magnifier under the pointer, the color in every notation. An option of its own, off by default.
 
 Non-goals: photo catalog or library, cloud, RAW development, plugins, App Store, notarization, Intel Macs, macOS older than 26, 16-bit and HDR editing, localization.
 
@@ -66,7 +67,7 @@ Nothing generated during a build is written inside the project folder.
 - Cold start target: first frame within 150 ms for an ordinary JPEG. Measured on this machine: about 160 ms from process creation, for both a 4000 px and a 6000 px JPEG. The very first launch after a build takes a few hundred milliseconds longer while macOS verifies the new signature. Of the 160 ms, roughly 60 are AppKit starting up and 35 are the toolbar; the decode runs in parallel from the first moment the file name is known.
 - How: no storyboard or nib, the window is created in code; decoding starts before any interface exists; the first thing shown is a frame downsampled to window size, with full resolution loaded right after; the editor, panels and libwebp are not touched until first use.
 - Fallback if the cold start turns out to be noticeable: after the window closes, the process stays alive for a few minutes without a Dock icon (activation policy `.accessory`) and opens the next file instantly. Enabled only if measurements call for it, as a setting.
-- With screenshots switched on (section 8.7) the process does stay: closing the last window removes the Dock icon and leaves the menu bar icon. The next file opened then needs no launch at all. Linking ScreenCaptureKit, ServiceManagement and Carbon for this made no measurable difference to the cold start (twenty launches of each build, interleaved: the same minimum, medians within the noise).
+- With screenshots or the color picker switched on (sections 8.7 and 8.8) the process does stay: closing the last window removes the Dock icon and leaves the menu bar icon. The next file opened then needs no launch at all. Linking ScreenCaptureKit, ServiceManagement and Carbon for this made no measurable difference to the cold start (twenty launches of each build, interleaved: the same minimum, medians within the noise).
 
 ## 5. Code layout
 
@@ -80,7 +81,7 @@ Sources/
   Pixix/Viewer    window, canvas, gestures, folder browsing, image loading
   Pixix/Export    export dialog, saving
   Pixix/Editor    editor controller, tools, inspector, dialogs
-  Pixix/Capture   screenshots: shortcut, menu bar icon, screen grabbing, the overlay and its small editor
+  Pixix/Capture   screenshots and the color picker: shortcuts, menu bar icon, screen grabbing, the overlays
 Tests/
   PixixCodecTests/
   PixixEngineTests/
@@ -244,6 +245,22 @@ An option in Settings, off by default. The reference is Sleekshot.
 
 **Selection arithmetic** — a frame pulled by corners and edges, held to proportions, kept on the screen — is `FrameGeometry` in the engine, shared with the crop tool and covered by tests.
 
+### 8.8. Color picker
+
+An option in Settings, off by default and switched on separately from screenshots, with a global shortcut of its own (`⇧⌘1` until another is recorded).
+
+**The same machinery.** `CaptureAgent` runs while either option is on: one process, one menu bar icon, one Screen Recording permission, a hot key for each. Every hot key of an app is offered to every Carbon handler, so `GlobalHotKey` carries an id and passes on a press that is not its own. One press cannot start two things: if both shortcuts are the same, the screenshot keeps it and Settings says so.
+
+**Freezing the screen,** as a screenshot does, and for the same reasons: hover states and open menus stay as they were, and the magnifier has pixels to read without capturing the screen over and over. `PickerSession` puts a borderless panel over every display with the picture of it, and copies the pixels once into a `PixelBuffer`, so reading one and enlarging a few is a matter of indexing memory.
+
+**The magnifier** sits beside the pointer, below and to the right, and moves to the other side at the edge of the screen. It shows 21 × 21 pixels at 8 points each, with a grid, the middle pixel framed, a band of its color, and a line per notation. The arrow keys move by one pixel (ten with `⇧`) and take the pointer along, because a hand on a mouse cannot. The system's own `NSColorSampler` was rejected: it shows no values and cannot be given any.
+
+**Values are sRGB.** The picture is in the display's color space; a pixel is converted to sRGB before it is written down, so a page that says `#FF0000` reads as `#FF0000` on a wide-gamut display too. The notations — HEX, RGB, HSL, HSB — are `ColorNotation` in the engine, all counted from the same three bytes so that they name one color. Settings chooses which are shown; at least one always is.
+
+**A click** does one of two things, chosen in Settings, and `⌥` does the other: copies the color in one notation, announced by the same pill at the bottom of the screen a screenshot uses; or opens a small floating panel with every notation and a button to copy each. The panel is non-activating and cannot become main, so it takes neither the keyboard from the app in front nor a place in the Dock.
+
+**Settings** grew past the height of a laptop screen with this, and is now three pages — General, Screenshots, Color Picker — the last two each ending with what they share: start at login, and the permission.
+
 ## 9. Phases
 
 Every phase ends with an app that can be used.
@@ -258,6 +275,8 @@ Every phase ends with an app that can be used.
 | 5. Raster editor | Selections, brushes, fill, gradient, clone stamp, blend modes, history panel, adjustment and effect menus | The first tier of 8.4 is covered, then the second | Done, except the items in section 12 |
 | 6. Polish | Settings, thumbnail strip, slideshow, batch conversion, printing, `.pixix` previews in Finder, images above 100 MP | — | Settings, thumbnail strip, slideshow and printing done; the rest is not |
 | 7. Screenshots | Global shortcut, menu bar icon, frozen-screen overlay, selection with size and proportions, markup in place, copy, save, text recognition, hand-off to the editor | A part of the screen is on the clipboard, marked up, without a window opening | Done. Checked by scripted scenarios on a picture standing in for the screen, and used by the author on a real one; section 12 lists what nobody has tried |
+
+| 8. Color picker | A second global shortcut, frozen-screen overlay with a magnifier, values in four notations, copy on click or a window with the values, the choice of notations | A color from anywhere on the screen is on the clipboard in two actions | Done. Checked by scripted scenarios on a picture standing in for the screen; not yet tried on a real one |
 
 "Done" means built and checked by the unit tests and by scripted screenshots of the running app (see AGENTS.md). In 0.2.0 the viewer gained several windows, folders, file operations, a context menu, Live Text and the histogram, and the editor gained typing on the canvas, speech bubbles, badges, spotlights, shadows, Select Subject, Add Image Below and a straightened crop frame that shrinks to fit: a tilted frame is made smaller about its center until no corner is empty, unless it was pulled past the picture on purpose. Gesture feel — swipe thresholds, pinch, the hand on a real trackpad — has not been tried by a person yet.
 
@@ -286,6 +305,8 @@ Phases 0–2 remove the main pain. Phases 3–4 solve the meme task. Phase 5 is 
 ## 12. Not done
 
 - **Trying the rest of screenshots on a real screen.** The scripted scenarios run the overlay on a picture from a file, and the author has taken screenshots with the shortcut on a single display. Not tried by anyone: the overlay over full-screen apps and on a second display, typing through an input method, the menu bar coming back when a window opens from the menu bar state, and the launch at login.
+- **Trying the color picker on a real screen.** The scripted scenarios move the magnifier over a picture from a file and check the values, including on a Display P3 picture. Not tried by anyone: the pointer's shape over the overlay, the arrow keys taking the pointer along, a second display, and the floating window over a full-screen app.
+- **A history of picked colors,** and picking several in a row without pressing the shortcut again.
 - **Decorative arrow styles** for screenshots. The reference has seven (a pointing hand, a brushed arrow, an outlined one); Pixix has one. They need drawing code in `ObjectRenderer` and an optional style field in `ShapeContent`.
 - **Screen recording, a link to share a screenshot, scrolling capture, pinning a screenshot to the screen.** The first two are what the reference has beyond this; a link would need a server.
 

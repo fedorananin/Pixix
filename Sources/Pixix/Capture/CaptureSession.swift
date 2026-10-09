@@ -103,21 +103,31 @@ enum CaptureOutput {
     private static var notice: NSPanel?
 
     /// A word at the bottom of the screen that fades by itself: the overlay is gone by the time a screenshot
-    /// has landed, so something has to say that it did.
-    static func announce(_ text: String) {
+    /// has landed, so something has to say that it did. A picked color is shown beside its name.
+    static func announce(_ text: String, swatch: RGBAColor? = nil) {
         guard CaptureAgent.shared.announces else { return }
         notice?.close()
         let label = NSTextField(labelWithString: text)
         label.font = .systemFont(ofSize: 13, weight: .medium)
         label.textColor = .white
         label.sizeToFit()
-        let size = NSSize(width: label.frame.width + 32, height: 32)
+        let lead: CGFloat = swatch == nil ? 16 : 36
+        let size = NSSize(width: label.frame.width + lead + 16, height: 32)
         let pill = NSView(frame: NSRect(origin: .zero, size: size))
         pill.wantsLayer = true
         pill.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.78).cgColor
         pill.layer?.cornerRadius = 16
-        label.setFrameOrigin(NSPoint(x: 16, y: (size.height - label.frame.height) / 2))
+        label.setFrameOrigin(NSPoint(x: lead, y: (size.height - label.frame.height) / 2))
         pill.addSubview(label)
+        if let swatch {
+            let chip = NSView(frame: NSRect(x: 12, y: 8, width: 16, height: 16))
+            chip.wantsLayer = true
+            chip.layer?.backgroundColor = swatch.cgColor
+            chip.layer?.cornerRadius = 4
+            chip.layer?.borderWidth = 1
+            chip.layer?.borderColor = NSColor.white.withAlphaComponent(0.4).cgColor
+            pill.addSubview(chip)
+        }
 
         let pointer = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { $0.frame.contains(pointer) } ?? NSScreen.main

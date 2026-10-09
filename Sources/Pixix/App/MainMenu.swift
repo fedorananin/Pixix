@@ -70,6 +70,10 @@ enum MainMenu {
         let screenshot = item("Take Screenshot", #selector(CaptureAgent.takeScreenshot(_:)))
         screenshot.target = CaptureAgent.shared
         menu.addItem(screenshot)
+        // The same for the color picker.
+        let color = item("Pick Color from Screen", #selector(CaptureAgent.pickColor(_:)))
+        color.target = CaptureAgent.shared
+        menu.addItem(color)
         menu.addItem(.separator())
         menu.addItem(item("Close", #selector(NSWindow.performClose(_:)), "w"))
         menu.addItem(item("Save", #selector(Controller.saveDocument(_:)), "s"))

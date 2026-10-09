@@ -14,6 +14,16 @@ struct KeyCombo: Codable, Hashable {
         keyCode: UInt32(kVK_ANSI_2), modifiers: NSEvent.ModifierFlags([.command, .shift]).rawValue, keyLabel: "2"
     )
 
+    /// What the color picker starts with: the key next to the screenshot's.
+    static let pickerStandard = KeyCombo(
+        keyCode: UInt32(kVK_ANSI_1), modifiers: NSEvent.ModifierFlags([.command, .shift]).rawValue, keyLabel: "1"
+    )
+
+    /// True when both are the same press, whatever the key was called when each was recorded.
+    func isSamePress(as other: KeyCombo) -> Bool {
+        keyCode == other.keyCode && flags == other.flags
+    }
+
     var flags: NSEvent.ModifierFlags {
         NSEvent.ModifierFlags(rawValue: modifiers).intersection([.command, .option, .control, .shift])
     }
@@ -122,8 +132,12 @@ final class GlobalHotKey {
     private var hotKey: EventHotKeyRef?
     private var handler: EventHandlerRef?
     private let action: @MainActor () -> Void
+    /// Tells this shortcut from the app's other ones: a press of any of them is offered to every handler.
+    private let id: UInt32
+    private static let signature: OSType = 0x5049_5849
 
-    init(action: @escaping @MainActor () -> Void) {
+    init(id: UInt32 = 1, action: @escaping @MainActor () -> Void) {
+        self.id = id
         self.action = action
     }
 
@@ -142,9 +156,9 @@ final class GlobalHotKey {
     func register(_ combo: KeyCombo) -> Bool {
         unregister()
         installHandler()
-        let id = EventHotKeyID(signature: 0x5049_5849, id: 1)
+        let name = EventHotKeyID(signature: Self.signature, id: id)
         var reference: EventHotKeyRef?
-        let status = RegisterEventHotKey(combo.keyCode, combo.carbonModifiers, id, GetApplicationEventTarget(), 0, &reference)
+        let status = RegisterEventHotKey(combo.keyCode, combo.carbonModifiers, name, GetApplicationEventTarget(), 0, &reference)
         guard status == noErr else { return false }
         hotKey = reference
         return true
@@ -161,9 +175,9 @@ final class GlobalHotKey {
         var event: EventRef?
         guard CreateEvent(nil, OSType(kEventClassKeyboard), UInt32(kEventHotKeyPressed), 0, 0, &event) == noErr, let event else { return false }
         defer { ReleaseEvent(event) }
-        var id = EventHotKeyID(signature: 0x5049_5849, id: 1)
+        var name = EventHotKeyID(signature: Self.signature, id: id)
         SetEventParameter(
-            event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), MemoryLayout<EventHotKeyID>.size, &id
+            event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), MemoryLayout<EventHotKeyID>.size, &name
         )
         return SendEventToEventTarget(event, GetApplicationEventTarget()) == noErr
     }
@@ -172,15 +186,24 @@ final class GlobalHotKey {
         guard handler == nil else { return }
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         let owner = Unmanaged.passUnretained(self).toOpaque()
-        InstallEventHandler(GetApplicationEventTarget(), { _, _, userData in
-            guard let userData else { return noErr }
+        InstallEventHandler(GetApplicationEventTarget(), { _, event, userData in
+            guard let userData, let event else { return OSStatus(eventNotHandledErr) }
+            var pressed = EventHotKeyID()
+            let status = GetEventParameter(
+                event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil,
+                MemoryLayout<EventHotKeyID>.size, nil, &pressed
+            )
+            let pressedID = pressed.id
             // Hot keys are delivered on the main thread, through the app's own event loop.
             let address = Int(bitPattern: userData)
-            MainActor.assumeIsolated {
-                guard let pointer = UnsafeRawPointer(bitPattern: address) else { return }
-                Unmanaged<GlobalHotKey>.fromOpaque(pointer).takeUnretainedValue().action()
+            return MainActor.assumeIsolated {
+                guard let pointer = UnsafeRawPointer(bitPattern: address) else { return OSStatus(eventNotHandledErr) }
+                let key = Unmanaged<GlobalHotKey>.fromOpaque(pointer).takeUnretainedValue()
+                // Another shortcut of the app's: the handler that owns it comes next.
+                guard status == noErr, pressedID == key.id else { return OSStatus(eventNotHandledErr) }
+                key.action()
+                return noErr
             }
-            return noErr
         }, 1, &spec, owner, &handler)
     }
 }

@@ -58,7 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Files from Finder arrive through `application(_:open:)`, possibly a moment after launch.
         DispatchQueue.main.async { [self] in
             // A diagnostic run takes no shortcut and puts nothing in the menu bar.
-            let captures = !launchOptions.isUnattended && Settings.shared.capturesScreenshots
+            let captures = !launchOptions.isUnattended && Settings.shared.staysInMenuBar
             if captures { CaptureAgent.shared.start() }
             guard controllers.isEmpty, !didOpenFiles, captures, startsHidden else {
                 if controllers.isEmpty, !didOpenFiles { present(makeController()) }
@@ -66,7 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 if !launchOptions.isUnattended { NSApp.activate() }
                 return
             }
-            // Started at login to wait for the screenshot shortcut: no window, no Dock icon.
+            // Started at login to wait for the shortcuts: no window, no Dock icon.
             CaptureAgent.shared.updateDockPresence()
         }
     }
@@ -77,8 +77,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return event.paramDescriptor(forKeyword: keyAEPropData)?.enumCodeValue == keyAELaunchedAsLogInItem
     }
 
-    /// The point of the whole app: closing the last window removes it from the Dock. With screenshots switched
-    /// on the icon still goes, but the process stays behind the menu bar icon to hear the shortcut.
+    /// The point of the whole app: closing the last window removes it from the Dock. With screenshots or the
+    /// color picker switched on the icon still goes, but the process stays behind the menu bar icon to hear
+    /// the shortcuts.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { !CaptureAgent.shared.isRunning }
 
     /// Opening Pixix again while it sits in the menu bar brings up a window.

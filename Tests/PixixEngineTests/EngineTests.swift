@@ -577,6 +577,48 @@ func dump(_ document: Document, _ name: String) {
         let color = try #require(document.color(at: CGPoint(x: 60, y: 5)))
         #expect(color.green > 0.99 && color.red < 0.01 && color.alpha > 0.99)
     }
+
+    @Test func notationsWriteTheSameColor() {
+        let navy = RGBAColor(red: 26.0 / 255, green: 43.0 / 255, blue: 60.0 / 255)
+        #expect(ColorNotation.hex.text(of: navy) == "#1A2B3C")
+        #expect(ColorNotation.rgb.value(of: navy) == "26, 43, 60")
+        #expect(ColorNotation.rgb.text(of: navy) == "rgb(26, 43, 60)")
+        #expect(ColorNotation.hsl.value(of: navy) == "210°, 40%, 17%")
+        #expect(ColorNotation.hsl.text(of: navy) == "hsl(210, 40%, 17%)")
+        #expect(ColorNotation.hsb.text(of: navy) == "hsb(210, 57%, 24%)")
+    }
+
+    @Test func notationsAtTheEdgesOfTheWheel() {
+        #expect(ColorNotation.hsl.text(of: RGBAColor(red: 1, green: 0, blue: 0)) == "hsl(0, 100%, 50%)")
+        #expect(ColorNotation.hsl.text(of: RGBAColor(red: 0, green: 1, blue: 0)) == "hsl(120, 100%, 50%)")
+        #expect(ColorNotation.hsl.text(of: RGBAColor(red: 0, green: 0, blue: 1)) == "hsl(240, 100%, 50%)")
+        #expect(ColorNotation.hsb.text(of: RGBAColor(red: 1, green: 0, blue: 1)) == "hsb(300, 100%, 100%)")
+        // A gray has no hue, and neither end of the scale has saturation.
+        #expect(ColorNotation.hsl.text(of: RGBAColor(red: 0.5, green: 0.5, blue: 0.5)) == "hsl(0, 0%, 50%)")
+        #expect(ColorNotation.hsl.text(of: .white) == "hsl(0, 0%, 100%)")
+        #expect(ColorNotation.hsb.text(of: .black) == "hsb(0, 0%, 0%)")
+        // A red a hair toward blue rounds to 360°, which is written as 0°.
+        #expect(ColorNotation.hsl.text(of: RGBAColor(red: 1, green: 0, blue: 1.0 / 255)) == "hsl(0, 100%, 50%)")
+        // Values outside 0...1 are held to it.
+        #expect(ColorNotation.hex.text(of: RGBAColor(red: 1.2, green: -0.1, blue: 0.5)) == "#FF0080")
+    }
+
+    @Test func partOfABufferBecomesAnImage() throws {
+        let space = try #require(CGColorSpace(name: CGColorSpace.sRGB))
+        let buffer = try #require(PixelBuffer(image: quadrantImage(), colorSpace: space))
+        // Across the middle, where the four colors meet.
+        let part = try #require(buffer.makeImage(of: CGRect(x: 30, y: 22, width: 4, height: 4)))
+        #expect(part.width == 4 && part.height == 4)
+        let copy = try #require(PixelBuffer(image: part, colorSpace: space))
+        #expect(copy.pixel(x: 0, y: 0).map { [$0.red, $0.green, $0.blue] } == [255, 0, 0])
+        #expect(copy.pixel(x: 3, y: 0).map { [$0.red, $0.green, $0.blue] } == [0, 255, 0])
+        #expect(copy.pixel(x: 0, y: 3).map { [$0.red, $0.green, $0.blue] } == [0, 0, 255])
+        #expect(copy.pixel(x: 3, y: 3).map { [$0.red, $0.green, $0.blue] } == [255, 255, 255])
+        // A rectangle that hangs over the edge is cut to what is there; one that misses gives nothing.
+        let corner = try #require(buffer.makeImage(of: CGRect(x: -3, y: -3, width: 5, height: 5)))
+        #expect(corner.width == 2 && corner.height == 2)
+        #expect(buffer.makeImage(of: CGRect(x: 100, y: 100, width: 5, height: 5)) == nil)
+    }
 }
 
 @MainActor

@@ -3,6 +3,7 @@
 A fast image viewer and layered editor for macOS. It opens instantly, leaves the Dock when its window closes,
 flips through a folder like Windows 11 Photos, converts and resizes in one dialog, and edits with layers like
 Paint.NET. It can also take screenshots: select a part of the screen, mark it up on the spot, copy or save.
+And it picks colors from anywhere on the screen, under a magnifier.
 
 ![Pixix showing a picture](docs/screenshots/viewer.jpg)
 
@@ -143,6 +144,30 @@ the shortcut you chose is one macOS still uses.
 
 Releases are signed ad hoc, so macOS may ask for the Screen Recording permission again after an update.
 
+## Color picker
+
+Off by default, and separate from screenshots: turn on **Settings › Color Picker › Pick colors from the screen
+with Pixix**. It needs the same Screen Recording permission, and keeps Pixix in the menu bar the same way. The
+shortcut is `⇧⌘1` unless you record another.
+
+Press the shortcut and the screen freezes. A magnifier follows the pointer: the pixels around it enlarged, the
+one in the middle framed, and its color written underneath as HEX, RGB and HSL.
+
+| To | Do this |
+|---|---|
+| Take the color | Click, or press `Return` |
+| Hit an exact pixel | The arrow keys move by one pixel, ten with `⇧` |
+| Do the other thing with it | Click with `⌥` held |
+| Back out | `Esc` or a right click |
+
+What a click does is chosen in Settings. **Copies the color** puts one value on the clipboard, in the notation
+picked under **Copy as**: `#1A2B3C`, `rgb(26, 43, 60)`, `hsl(210, 40%, 17%)` or `hsb(210, 57%, 24%)`. **Opens
+a window with its values** shows the color in a small floating window with every notation and a button to copy
+each; **Pick Another** there picks again into the same window.
+
+**Show** in Settings switches off the notations you have no use for, in the magnifier and in the window alike.
+The values are sRGB whatever the display is, so a color picked from a web page reads as the page wrote it.
+
 ## Building from source
 
 You need macOS 26 or later with Xcode 27 or its Command Line Tools (Swift 6.4). Xcode itself is optional.
@@ -173,7 +198,7 @@ publishes a release with `Pixix.zip` attached.
 Sources/CWebP/        vendored libwebp 1.6.0, used only to write WebP
 Sources/PixixCodec/   reading, writing, metadata, export
 Sources/PixixEngine/  document, layers, selection, history, rendering, painting
-Sources/Pixix/        the app: viewer, editor, export dialog, screenshots
+Sources/Pixix/        the app: viewer, editor, export dialog, screenshots, color picker
 Tests/                Swift Testing suites for the codec and the engine
 Resources/            Info.plist and the icon
 Scripts/              build-app.sh, run.sh, make-icon.swift, make-sample.swift
@@ -195,6 +220,7 @@ PIXIX_TRACE=1 $APP --timing --quit photo.jpg            # the same, with launch 
 $APP --snapshot out.png photo.jpg                       # a picture of the viewer window
 $APP --snapshot out.png --edit --demo meme photo.jpg    # a picture of the editor after a scripted scenario
 $APP --snapshot out.png --demo capture photo.jpg        # the screenshot overlay, with the picture standing in for the screen
+$APP --snapshot out.png --demo picker photo.jpg         # the color picker's magnifier, on the same stand-in
 $APP --background                                       # with screenshots switched on: start in the menu bar, with no window
 $APP --snapshot out.png --memory photo.jpg              # also print how much memory the app holds by then
 ```

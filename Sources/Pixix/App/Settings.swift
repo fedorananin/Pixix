@@ -1,5 +1,6 @@
 import Foundation
 import PixixCodec
+import PixixEngine
 
 enum SortOrder: String, CaseIterable, Identifiable {
     case name, dateModified, dateCreated, size
@@ -142,6 +143,53 @@ final class Settings {
     var didAskForScreenAccess: Bool {
         get { defaults.bool(forKey: "didAskForScreenAccess") }
         set { defaults.set(newValue, forKey: "didAskForScreenAccess") }
+    }
+
+    // MARK: Color picker
+
+    /// Pixix picks colors from the screen: it claims a global shortcut of its own for that and stays in the menu
+    /// bar, as it does for screenshots. The two are switched on separately.
+    var picksColors: Bool {
+        get { defaults.bool(forKey: "picksColors") }
+        set { defaults.set(newValue, forKey: "picksColors") }
+    }
+
+    /// True while something needs the process to stay behind a menu bar icon after its windows are closed.
+    var staysInMenuBar: Bool { capturesScreenshots || picksColors }
+
+    /// The shortcut that starts picking a color. Nil when the user cleared it and uses the menu bar icon alone.
+    var pickerHotKey: KeyCombo? {
+        get { decode("pickerHotKey") ?? (defaults.bool(forKey: "pickerHotKeyCleared") ? nil : .pickerStandard) }
+        set {
+            encode(newValue, "pickerHotKey")
+            defaults.set(newValue == nil, forKey: "pickerHotKeyCleared")
+        }
+    }
+
+    /// What a click on a pixel does.
+    var pickerAction: PickerAction {
+        get { PickerAction(rawValue: defaults.string(forKey: "pickerAction") ?? "") ?? .copy }
+        set { defaults.set(newValue.rawValue, forKey: "pickerAction") }
+    }
+
+    /// The notations the magnifier and the color window show, in their usual order. Never empty.
+    var pickerNotations: [ColorNotation] {
+        get {
+            let stored = defaults.stringArray(forKey: "pickerNotations")?.compactMap(ColorNotation.init(rawValue:)) ?? [.hex, .rgb, .hsl]
+            let shown = ColorNotation.allCases.filter(stored.contains)
+            return shown.isEmpty ? [.hex] : shown
+        }
+        set { defaults.set(newValue.map(\.rawValue), forKey: "pickerNotations") }
+    }
+
+    /// The notation a click copies. Always one of those that are shown.
+    var pickerCopyNotation: ColorNotation {
+        get {
+            let shown = pickerNotations
+            let stored = ColorNotation(rawValue: defaults.string(forKey: "pickerCopyNotation") ?? "") ?? .hex
+            return shown.contains(stored) ? stored : shown[0]
+        }
+        set { defaults.set(newValue.rawValue, forKey: "pickerCopyNotation") }
     }
 
     /// The settings of the most recent export, replayed by Export Again.

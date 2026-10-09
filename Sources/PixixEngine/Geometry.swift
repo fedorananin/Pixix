@@ -80,7 +80,7 @@ extension CGAffineTransform {
 
 extension CGContext {
     /// Draws an image the right way up in a context whose y axis points down.
-    func drawUpright(_ image: CGImage, in rect: CGRect) {
+    public func drawUpright(_ image: CGImage, in rect: CGRect) {
         saveGState()
         translateBy(x: rect.minX, y: rect.maxY)
         scaleBy(x: 1, y: -1)

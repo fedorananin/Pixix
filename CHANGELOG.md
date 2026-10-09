@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.0
+
+- **Color picker.** Switched on in Settings, with a shortcut of its own (`⇧⌘1`, or one of your choosing): the
+  screen freezes and a magnifier follows the pointer, showing the pixels around it enlarged and the color of
+  the one in the middle as HEX, RGB, HSL and HSB. The arrow keys move by a single pixel.
+- **A click copies the color** in the notation you chose, or **opens a small window** with every value and a
+  button to copy each; Settings says which, and a click with `⌥` held does the other.
+- Settings chooses which notations are shown. The values are sRGB, whatever the display.
+- Screenshots and the color picker are switched on separately; either keeps Pixix in the menu bar.
+- Settings is laid out in three pages: General, Screenshots and Color Picker.
+
 ## 0.3.0
 
 - **Screenshots.** Switched on in Settings, Pixix takes screenshots: press the shortcut (`⇧⌘2`, or one of your

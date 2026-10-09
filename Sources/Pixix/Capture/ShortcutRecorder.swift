@@ -52,8 +52,8 @@ final class ShortcutRecorderButton: NSButton {
         isRecording = true
         heldModifiers = []
         note = nil
-        // The shortcut in force would fire instead of being recorded.
-        CaptureAgent.shared.suspendHotKey()
+        // A shortcut in force would fire instead of being recorded.
+        CaptureAgent.shared.suspendHotKeys()
         // So would the shortcuts of macOS itself, such as ⇧⌘5: they are switched off while this app is in front
         // and the recorder is listening.
         if !CaptureAgent.shared.isUnattended { systemShortcuts = PushSymbolicHotKeyMode(OptionBits(kHIHotKeyModeAllDisabled)) }
@@ -76,7 +76,7 @@ final class ShortcutRecorderButton: NSButton {
         systemShortcuts = nil
         heldModifiers = []
         note = nil
-        CaptureAgent.shared.applyHotKey()
+        CaptureAgent.shared.applyHotKeys()
         refresh()
     }
 

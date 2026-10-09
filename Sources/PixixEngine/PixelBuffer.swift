@@ -94,6 +94,17 @@ public final class PixelBuffer: @unchecked Sendable {
         )!
     }
 
+    /// An independent snapshot of a part of the pixels: as much of the rectangle as lies inside the buffer.
+    public func makeImage(of rect: CGRect) -> CGImage? {
+        let part = rect.integral.intersection(bounds)
+        guard !part.isEmpty, let provider = CGDataProvider(data: bytes(in: part) as CFData) else { return nil }
+        return CGImage(
+            width: Int(part.width), height: Int(part.height), bitsPerComponent: 8, bitsPerPixel: 32,
+            bytesPerRow: Int(part.width) * 4, space: colorSpace, bitmapInfo: CGBitmapInfo(rawValue: Self.bitmapInfo),
+            provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent
+        )
+    }
+
     /// An image that reads the live pixels without copying. It must not outlive the closure,
     /// and the buffer must not be drawn into while it is in use.
     public func withUnsafeImage<T>(_ body: (CGImage) throws -> T) rethrows -> T {
