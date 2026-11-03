@@ -90,7 +90,7 @@ other with all frames. Everything macOS can decode is read, including RAW, PSD a
 Press **Edit** (`⌘↩`). The left strip holds the tools, the right panel their options, the layer's properties,
 adjustment sliders, the layer list and the history.
 
-- **Crop** (`C`): free or fixed ratio, straighten, and drag the frame past the edge to extend the canvas.
+- **Crop** (`C`): free or fixed ratio, straighten, and drag the frame past the edge to extend the canvas. The arrow keys move the edge or corner dragged last by a pixel (ten with Shift), for trimming a border or a scroll bar.
 - **Markup**: arrow (`A`), line, rectangle (`R`), ellipse (`U`), pen (`P`), highlighter (`H`), text (`T`),
   speech bubble (`Y`), numbered badge (`Q`), blur area (`J`), pixelate area (`K`), spotlight (`Z`), which
   darkens everything around an area. These stay editable objects until rasterized, and text and shapes can

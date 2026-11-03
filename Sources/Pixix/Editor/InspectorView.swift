@@ -255,7 +255,7 @@ struct InspectorView: View {
             Button("Apply Crop") { editor.applyCrop() }
                 .buttonStyle(.borderedProminent)
         }
-        hint("Drag the frame past the edge of the picture to extend the canvas. Press Return to apply.")
+        hint("Arrow keys move the edge you dragged last by a pixel, ten with Shift. Drag the frame past the edge of the picture to extend the canvas. Press Return to apply.")
     }
 
     @ViewBuilder private var selectionOptions: some View {

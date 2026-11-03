@@ -146,7 +146,7 @@ One engine and two levels of interface. Under the hood the document is always la
 
 The Edit button turns the viewer window into the editor: a tool strip on the left, and on the right one panel with the tool's options, the layer's properties, adjustment sliders, layers and history.
 
-- **Crop:** free frame, fixed ratios (original, 1:1, 4:3, 3:2, 16:9 and their portrait versions), custom ratio, straighten, flip, rotate by 90°. The frame can be dragged beyond the image, which extends the canvas.
+- **Crop:** free frame, fixed ratios (original, 1:1, 4:3, 3:2, 16:9 and their portrait versions), custom ratio, straighten, flip, rotate by 90°. The frame can be dragged beyond the image, which extends the canvas. An edge snaps to the border of the picture only when it overshoots it by a few points, never from inside, so it can be set a pixel in from the border; a handle keeps its distance from the pointer instead of jumping to it. The arrow keys move the edge or corner dragged last by a pixel, ten with Shift, or the whole frame after it was moved.
 - **Resize:** proportional or stretched.
 - **Adjust:** brightness, exposure, contrast, highlights, shadows, saturation, vibrance, temperature, tint, sharpness, vignette.
 - **Filters:** presets of the same parameters.

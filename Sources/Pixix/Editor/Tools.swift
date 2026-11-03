@@ -89,12 +89,14 @@ final class MoveTool: EditorTool {
 
 final class CropTool: EditorTool {
     private enum Drag {
-        case handle(Int, original: CGRect)
+        case handle(Int, start: CGPoint, original: CGRect)
         case move(start: CGPoint, original: CGRect)
         case new(start: CGPoint)
     }
 
     private var drag: Drag?
+    /// What the arrow keys move: the handle dragged last, or the whole frame when nil.
+    private var nudged: Int?
     private var rect: CGRect {
         get { model.cropRect }
         set { model.cropRect = newValue }
@@ -177,32 +179,37 @@ final class CropTool: EditorTool {
             return
         }
         if let handle = handle(at: point) {
-            drag = .handle(handle, original: rect)
+            drag = .handle(handle, start: point, original: rect)
+            nudged = handle
         } else if rect.contains(point) {
             drag = .move(start: point, original: rect)
+            nudged = nil
         } else {
             drag = .new(start: point)
+            nudged = nil
         }
     }
 
     override func mouseDragged(to point: CGPoint, event: NSEvent) {
         guard let drag else { return }
-        let snap = !event.modifierFlags.contains(.control)
+        // Snapping pulls only a frame that overshoots the picture by a little, never one inside it,
+        // so an edge can still be set a pixel in from the border. Control turns it off.
+        let snap = event.modifierFlags.contains(.control) ? 0 : reach * 0.6
+        let bounds = document.bounds
         switch drag {
         case .move(let start, let original):
-            var moved = original.offsetBy(dx: point.x - start.x, dy: point.y - start.y)
-            if snap { moved = snappedOrigin(moved) }
-            rect = moved
+            let moved = original.offsetBy(dx: (point.x - start.x).rounded(), dy: (point.y - start.y).rounded())
+            rect = FrameGeometry.snapped(moved, outsideOf: bounds, within: snap)
         case .new(let start):
-            rect = FrameGeometry.frame(anchor: start, to: snap ? snappedPoint(point) : point, ratio: ratio)
-        case .handle(let index, let original):
-            let target = snap ? snappedPoint(point) : point
-            if index < 4 {
-                let anchor = FrameGeometry.handlePoints(original)[(index + 2) % 4]
-                rect = FrameGeometry.frame(anchor: anchor, to: target, ratio: ratio)
-            } else {
-                rect = FrameGeometry.frame(original, draggingEdge: index - 4, to: target, ratio: ratio)
-            }
+            let target = FrameGeometry.snapped(point.roundedToPixels, outsideOf: bounds, within: snap)
+            rect = FrameGeometry.frame(anchor: start.roundedToPixels, to: target, ratio: ratio)
+        case .handle(let index, let start, let original):
+            // The handle keeps its distance from the pointer: grabbing it a few points off must not make it jump.
+            let handle = FrameGeometry.handlePoints(original)[index]
+            let target = (handle + point - start).roundedToPixels
+            rect = FrameGeometry.frame(
+                original, draggingHandle: index, to: FrameGeometry.snapped(target, outsideOf: bounds, within: snap), ratio: ratio
+            )
         }
         updatePreview()
         redrawOverlay()
@@ -221,21 +228,20 @@ final class CropTool: EditorTool {
         redrawOverlay()
     }
 
-    private func snappedPoint(_ point: CGPoint) -> CGPoint {
-        var result = point
-        for edge in [0, document.size.width] where abs(point.x - edge) <= reach * 0.6 { result.x = edge }
-        for edge in [0, document.size.height] where abs(point.y - edge) <= reach * 0.6 { result.y = edge }
-        return result
-    }
-
-    private func snappedOrigin(_ rect: CGRect) -> CGRect {
-        var result = rect
-        let limit = reach * 0.6
-        if abs(rect.minX) <= limit { result.origin.x = 0 }
-        if abs(rect.maxX - document.size.width) <= limit { result.origin.x = document.size.width - rect.width }
-        if abs(rect.minY) <= limit { result.origin.y = 0 }
-        if abs(rect.maxY - document.size.height) <= limit { result.origin.y = document.size.height - rect.height }
-        return result
+    /// Arrow keys move the edge or corner dragged last by a pixel, ten with Shift; after the frame was moved
+    /// or drawn, they move the whole frame. Fine trims at any zoom, such as a one-pixel border or a scroll bar.
+    private func nudge(_ delta: CGPoint) {
+        if let index = nudged {
+            let handle = FrameGeometry.handlePoints(rect)[index]
+            rect = FrameGeometry.frame(
+                rect, draggingHandle: index, to: handle + delta, ratio: ratio
+            )
+        } else {
+            rect = rect.offsetBy(dx: delta.x, dy: delta.y)
+        }
+        chosen = rect
+        updatePreview()
+        redrawOverlay()
     }
 
     func apply() {
@@ -266,6 +272,16 @@ final class CropTool: EditorTool {
         case 53:
             model.straighten = 0
             reset()
+            return true
+        case 123, 124, 125, 126:
+            let step: CGFloat = event.modifierFlags.contains(.shift) ? 10 : 1
+            let delta = switch event.keyCode {
+            case 123: CGPoint(x: -step, y: 0)
+            case 124: CGPoint(x: step, y: 0)
+            case 125: CGPoint(x: 0, y: step)
+            default: CGPoint(x: 0, y: -step)
+            }
+            nudge(delta)
             return true
         default:
             return false

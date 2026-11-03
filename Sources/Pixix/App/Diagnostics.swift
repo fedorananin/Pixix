@@ -52,7 +52,7 @@ extension ViewerWindowController {
     /// screenshot options, `settings-colors` and `settings-general` are its other pages, and `shortcut` records
     /// shortcuts on it.
     /// With `--edit`: `meme`, `tools`, `markup`, `text`, `layers`, `append`, `subject`, `cutout`, `save`, `crop`,
-    /// `crop-applied`, `select`, `effect`, `export`, `menu`.
+    /// `crop-trim`, `crop-applied`, `select`, `effect`, `export`, `menu`.
     func runDemoScript(_ name: String, done: @escaping @MainActor () -> Void) {
         switch name {
         case "mouse":
@@ -550,6 +550,68 @@ extension ViewerWindowController {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { done() }
     }
 
+    /// Trims a few pixels off the edges with the crop tool, by mouse and by the arrow keys, and prints the frame
+    /// after each step: an edge must move off the border by a pixel or two and land on it again when it overshoots.
+    private func runCropTrimScript() {
+        guard let editor else { return }
+        let size = editor.document.size
+        editor.model.tool = .crop
+        editor.model.cropAspect = .free
+        let points = 1 / max(editor.canvas.scale, 0.0001)
+        func mouse(_ type: NSEvent.EventType) -> NSEvent {
+            NSEvent.mouseEvent(
+                with: type, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+                eventNumber: 0, clickCount: 1, pressure: 1
+            )!
+        }
+        func drag(from start: CGPoint, by delta: CGPoint) {
+            editor.toolMouseDown(at: start, event: mouse(.leftMouseDown))
+            editor.toolMouseDragged(to: start + delta * 0.5, event: mouse(.leftMouseDragged))
+            editor.toolMouseDragged(to: start + delta, event: mouse(.leftMouseDragged))
+            editor.toolMouseUp(at: start + delta, event: mouse(.leftMouseUp))
+        }
+        func key(_ code: UInt16, shift: Bool = false) {
+            guard let event = NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: shift ? [.shift] : [], timestamp: 0, windowNumber: 0,
+                context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: code
+            ) else { return }
+            _ = editor.handleKeyDown(event)
+        }
+        func report(_ step: String) {
+            let r = editor.model.cropRect
+            print("crop-trim: \(step): x \(Int(r.minX)) y \(Int(r.minY)) w \(Int(r.width)) h \(Int(r.height))")
+        }
+        report("start (\(Int(size.width)) × \(Int(size.height)), \(String(format: "%.2f", editor.canvas.scale)) screen points per pixel)")
+        // The right edge, grabbed 6 points to the left of its handle, pulled 2 pixels in.
+        drag(from: CGPoint(x: size.width - 6 * points, y: size.height / 2), by: CGPoint(x: -2, y: 0))
+        report("right edge 2 px in")
+        // The top edge one pixel down.
+        drag(from: CGPoint(x: size.width / 2, y: 0), by: CGPoint(x: 0, y: 1))
+        report("top edge 1 px in")
+        // The top edge pulled out again, 3 points past the picture: it lands on the border.
+        drag(from: CGPoint(x: size.width / 2, y: 1), by: CGPoint(x: 0, y: -1 - 3 * points))
+        report("top edge overshoots by 3 points")
+        // Far past the picture it stays there, to extend the canvas.
+        drag(from: CGPoint(x: size.width / 2, y: 0), by: CGPoint(x: 0, y: -30 * points))
+        report("top edge 30 points out")
+        key(53)
+        report("Escape")
+        // The left edge by the arrow keys: grabbed and let go in place, then three presses and one with Shift.
+        drag(from: CGPoint(x: 0, y: size.height / 2), by: .zero)
+        key(124); key(124); key(124)
+        report("left edge, → three times")
+        key(124, shift: true)
+        report("left edge, ⇧→")
+        // A corner: the bottom-right one, by ← and ↑.
+        drag(from: CGPoint(x: size.width, y: size.height), by: .zero)
+        key(123); key(126)
+        report("bottom-right corner, ← and ↑")
+        // The whole frame, after it was moved.
+        drag(from: CGPoint(x: size.width / 2, y: size.height / 2), by: .zero)
+        key(125)
+        report("whole frame, ↓")
+    }
+
     private func runEditorScript(_ name: String) {
         guard let editor else { return }
         let document = editor.document
@@ -559,6 +621,8 @@ extension ViewerWindowController {
             editor.model.tool = .crop
             editor.model.cropAspect = .r16x9
             editor.model.straighten = 12
+        case "crop-trim":
+            runCropTrimScript()
         case "crop-applied":
             editor.model.tool = .crop
             editor.model.cropAspect = .r16x9

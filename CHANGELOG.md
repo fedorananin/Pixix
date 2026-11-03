@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1
+
+- **Crop trims by the pixel.** An edge of the crop frame no longer sticks to the border of the picture: it can be
+  pulled a pixel or two in, to cut off a scroll bar or a thin frame, and snaps to the border only when it
+  overshoots it. A handle no longer jumps to the pointer when grabbed a little off. The arrow keys move the
+  edge or corner dragged last by a pixel, ten with Shift.
+
 ## 0.4.0
 
 - **Color picker.** Switched on in Settings, with a shortcut of its own (`⇧⌘1`, or one of your choosing): the

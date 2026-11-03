@@ -949,6 +949,29 @@ func dump(_ document: Document, _ name: String) {
         #expect(FrameGeometry.frame(original, draggingEdge: 3, to: CGPoint(x: 500, y: 0), ratio: nil).width == 1)
     }
 
+    @Test func handleDragMovesAgainstTheOppositeSide() {
+        let original = CGRect(x: 100, y: 100, width: 100, height: 50)
+        // The bottom-right corner, against the top-left one.
+        #expect(FrameGeometry.frame(original, draggingHandle: 2, to: CGPoint(x: 150, y: 140), ratio: nil)
+            == CGRect(x: 100, y: 100, width: 50, height: 40))
+        // The right edge, two pixels in.
+        #expect(FrameGeometry.frame(original, draggingHandle: 5, to: CGPoint(x: 198, y: 0), ratio: nil)
+            == CGRect(x: 100, y: 100, width: 98, height: 50))
+    }
+
+    @Test func snappingPullsOnlyFromOutside() {
+        // A pixel or two inside the edge stays where it was put.
+        #expect(FrameGeometry.snapped(CGPoint(x: 398, y: 1), outsideOf: screen, within: 6) == CGPoint(x: 398, y: 1))
+        // Just past the edge is pulled back onto it; far past it is left there, to extend the canvas.
+        #expect(FrameGeometry.snapped(CGPoint(x: 404, y: -3), outsideOf: screen, within: 6) == CGPoint(x: 400, y: 0))
+        #expect(FrameGeometry.snapped(CGPoint(x: 420, y: -30), outsideOf: screen, within: 6) == CGPoint(x: 420, y: -30))
+        // A moved frame the same way.
+        #expect(FrameGeometry.snapped(CGRect(x: 2, y: 3, width: 100, height: 100), outsideOf: screen, within: 6)
+            == CGRect(x: 2, y: 3, width: 100, height: 100))
+        #expect(FrameGeometry.snapped(CGRect(x: -4, y: 203, width: 100, height: 100), outsideOf: screen, within: 6)
+            == CGRect(x: 0, y: 200, width: 100, height: 100))
+    }
+
     @Test func edgeDragWithProportionsStaysInside() {
         let original = CGRect(x: 20, y: 100, width: 60, height: 30)
         // Pulling the bottom edge down would widen the frame past the left side of the screen.

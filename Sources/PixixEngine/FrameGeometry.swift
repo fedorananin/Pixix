@@ -89,6 +89,39 @@ public enum FrameGeometry {
         )
     }
 
+    /// The frame after handle `index` (numbered as in `handlePoints`) was taken to `point`:
+    /// a corner moves against the opposite one, an edge against the opposite edge.
+    public static func frame(_ original: CGRect, draggingHandle index: Int, to point: CGPoint, ratio: CGFloat?) -> CGRect {
+        guard index < 4 else { return frame(original, draggingEdge: index - 4, to: point, ratio: ratio) }
+        return frame(anchor: handlePoints(original)[(index + 2) % 4], to: point, ratio: ratio)
+    }
+
+    /// The point pulled onto the edge of `bounds` when it lies just outside it, no further than `distance`.
+    /// Inside the bounds nothing is pulled, so an edge can be set one pixel in from the border; the pull only
+    /// catches a frame that overshoots the picture.
+    public static func snapped(_ point: CGPoint, outsideOf bounds: CGRect, within distance: CGFloat) -> CGPoint {
+        CGPoint(
+            x: snapped(point.x, outsideOf: bounds.minX, bounds.maxX, within: distance),
+            y: snapped(point.y, outsideOf: bounds.minY, bounds.maxY, within: distance)
+        )
+    }
+
+    /// A frame being moved, slid onto the edges of `bounds` it overshoots by no more than `distance`.
+    public static func snapped(_ rect: CGRect, outsideOf bounds: CGRect, within distance: CGFloat) -> CGRect {
+        var result = rect
+        if rect.minX < bounds.minX, rect.minX >= bounds.minX - distance { result.origin.x = bounds.minX }
+        if rect.maxX > bounds.maxX, rect.maxX <= bounds.maxX + distance { result.origin.x = bounds.maxX - rect.width }
+        if rect.minY < bounds.minY, rect.minY >= bounds.minY - distance { result.origin.y = bounds.minY }
+        if rect.maxY > bounds.maxY, rect.maxY <= bounds.maxY + distance { result.origin.y = bounds.maxY - rect.height }
+        return result
+    }
+
+    private static func snapped(_ value: CGFloat, outsideOf low: CGFloat, _ high: CGFloat, within distance: CGFloat) -> CGFloat {
+        if value < low, value >= low - distance { return low }
+        if value > high, value <= high + distance { return high }
+        return value
+    }
+
     /// The frame shrunk about its center until it has the proportions.
     public static func fitted(_ rect: CGRect, ratio: CGFloat) -> CGRect {
         guard rect.width > 0, rect.height > 0, ratio > 0 else { return rect }

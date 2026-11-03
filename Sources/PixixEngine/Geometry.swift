@@ -48,6 +48,8 @@ extension CGPoint {
     public static func * (a: CGPoint, k: CGFloat) -> CGPoint { CGPoint(x: a.x * k, y: a.y * k) }
     public var length: CGFloat { hypot(x, y) }
     public func distance(to other: CGPoint) -> CGFloat { hypot(x - other.x, y - other.y) }
+    /// The nearest whole pixel.
+    public var roundedToPixels: CGPoint { CGPoint(x: x.rounded(), y: y.rounded()) }
 }
 
 extension CGAffineTransform {
