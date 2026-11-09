@@ -1,3 +1,4 @@
+import AppKit
 import PixixEngine
 import SwiftUI
 
@@ -11,8 +12,13 @@ private struct DialogButtons: View {
             Spacer()
             Button("Cancel", role: .cancel, action: onCancel)
                 .keyboardShortcut(.cancelAction)
-            Button(confirm, action: onConfirm)
-                .keyboardShortcut(.defaultAction)
+            Button(confirm) {
+                // A number typed into a field reaches the model only when the field lets go of the keyboard.
+                // A click on the button does not take it, so the field is made to let go before anything is read.
+                NSApp.keyWindow?.makeFirstResponder(nil)
+                onConfirm()
+            }
+            .keyboardShortcut(.defaultAction)
         }
         .padding(.top, 14)
     }

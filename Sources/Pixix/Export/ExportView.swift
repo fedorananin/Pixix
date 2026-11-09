@@ -106,12 +106,19 @@ struct ExportView: View {
                 Spacer()
                 Button("Cancel", role: .cancel, action: onCancel)
                     .keyboardShortcut(.cancelAction)
-                Button("Choose Location…") { onConfirm(true) }
-                    .disabled(!canConfirm)
-                Button(model.confirmTitle) { onConfirm(false) }
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(!canConfirm)
-                    .help("Save next to the original file")
+                if model.needsLocation {
+                    Button(model.confirmTitle + "…") { onConfirm(true) }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(!canConfirm)
+                        .help("Choose where to save it")
+                } else {
+                    Button("Choose Location…") { onConfirm(true) }
+                        .disabled(!canConfirm)
+                    Button(model.confirmTitle) { onConfirm(false) }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(!canConfirm)
+                        .help("Save next to the original file")
+                }
             }
         }
         .padding(20)

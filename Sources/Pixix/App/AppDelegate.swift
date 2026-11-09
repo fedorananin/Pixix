@@ -90,23 +90,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool { true }
 
-    /// Quitting with unsaved edits asks about each of them; the app then quits once its windows are gone.
+    /// Quitting with unsaved edits asks about each of them, and quits once all are answered.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let asker = Self.quitRequester
         trace("asked to quit by \(asker.map { "pid \($0)" } ?? "the app itself")")
         if CaptureAgent.shared.declinesQuit(askedBy: asker.flatMap(NSRunningApplication.init(processIdentifier:))) { return .terminateCancel }
         // Nobody is there to answer in a diagnostic run, and its edits are throwaway.
         if launchOptions.isUnattended { return .terminateNow }
-        let unsaved = controllers.filter { $0.editor?.isDirty == true }
+        let unsaved = controllers.filter { $0.editor?.hasUnsavedWork == true }
         guard !unsaved.isEmpty else { return .terminateNow }
-        for controller in controllers where controller.editor?.isDirty != true {
-            controller.window?.close()
+        // Each window with edits asks in turn. Nothing closes until every answer is in, so Cancel on any of
+        // them leaves the app exactly as it was; and the app quits by the answers even when the menu bar icon
+        // would otherwise keep it running after its last window.
+        askBeforeQuitting(unsaved)
+        return .terminateLater
+    }
+
+    private func askBeforeQuitting(_ remaining: [ViewerWindowController]) {
+        guard let controller = remaining.first else {
+            NSApp.reply(toApplicationShouldTerminate: true)
+            return
         }
-        for controller in unsaved {
-            controller.window?.makeKeyAndOrderFront(nil)
-            controller.window?.performClose(nil)
+        guard controller.window != nil, controller.editor?.hasUnsavedWork == true else {
+            askBeforeQuitting(Array(remaining.dropFirst()))
+            return
         }
-        return .terminateCancel
+        controller.window?.makeKeyAndOrderFront(nil)
+        controller.confirmDiscardingEdits { [weak self] proceed in
+            if proceed {
+                self?.askBeforeQuitting(Array(remaining.dropFirst()))
+            } else {
+                NSApp.reply(toApplicationShouldTerminate: false)
+            }
+        }
     }
 
     /// The process whose Quit event is being handled. Nil when the app is quitting by itself, from its own
@@ -168,6 +184,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Never pull the rug from under an editing session.
         if !Settings.shared.opensNewWindows, let viewing = controllers.first(where: { !$0.isEditing }) { return viewing }
         return makeController()
+    }
+
+    /// True when a window other than `asker` has this file open in the editor. A later Save there would
+    /// bring back a file trashed, renamed or turned in the meantime.
+    func isEditing(_ url: URL, except asker: ViewerWindowController) -> Bool {
+        controllers.contains { $0 !== asker && $0.editor?.fileURL?.standardizedFileURL == url.standardizedFileURL }
     }
 
     func controllerDidClose(_ controller: ViewerWindowController) {

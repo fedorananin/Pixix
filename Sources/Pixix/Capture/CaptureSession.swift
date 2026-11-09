@@ -91,9 +91,17 @@ enum CaptureOutput {
             case .success(let destination):
                 announce("Saved to \(destination.deletingLastPathComponent().lastPathComponent)")
             case .failure(let error):
+                // The overlay is gone by now, and with it the picture, unless it is kept somewhere.
+                var kept = false
+                if !CaptureAgent.shared.isUnattended {
+                    let size = NSSize(width: CGFloat(image.width) / scale, height: CGFloat(image.height) / scale)
+                    NSPasteboard.general.clearContents()
+                    kept = NSPasteboard.general.writeObjects([NSImage(cgImage: image, size: size)])
+                }
                 let alert = NSAlert(error: error)
                 alert.messageText = "The screenshot could not be saved"
                 alert.informativeText = error.localizedDescription
+                    + (kept ? "\n\nThe screenshot is on the clipboard, so it is not lost." : "")
                 NSApp.activate()
                 alert.runModal()
             }

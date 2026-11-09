@@ -255,7 +255,7 @@ struct InspectorView: View {
             Button("Apply Crop") { editor.applyCrop() }
                 .buttonStyle(.borderedProminent)
         }
-        hint("Arrow keys move the edge you dragged last by a pixel, ten with Shift. Drag the frame past the edge of the picture to extend the canvas. Press Return to apply.")
+        hint("Drag inside the frame to move it. To move the picture, scroll, or drag with Space held. Arrow keys move the edge you dragged last by a pixel, ten with Shift; ⌘Z takes a frame back. Drag past the edge of the picture to extend the canvas. Return applies the crop, and so does switching to another tool or saving.")
     }
 
     @ViewBuilder private var selectionOptions: some View {

@@ -63,6 +63,7 @@ extension ViewerWindowController {
 
     @objc func renameFile(_ sender: Any?) {
         guard !isEditing, let url = currentURL, let window, window.attachedSheet == nil else { return }
+        guard !currentFileIsEditedElsewhere else { return refuseWhileEditedElsewhere() }
         let alert = NSAlert()
         alert.messageText = "Rename “\(url.lastPathComponent)”"
         if !url.pathExtension.isEmpty {
@@ -125,6 +126,10 @@ extension ViewerWindowController {
 
     @objc func duplicateFile(_ sender: Any?) {
         guard !isEditing, let url = currentURL else { return }
+        duplicate(url)
+    }
+
+    private func duplicate(_ url: URL) {
         let copy = FileWriter.uniqueURL(near: url, suffix: " copy")
         do {
             try FileManager.default.copyItem(at: url, to: copy)
@@ -137,6 +142,7 @@ extension ViewerWindowController {
             do {
                 try FileManager.default.trashItem(at: copy, resultingItemURL: nil)
                 controller.browser?.remove(copy)
+                controller.window?.undoManager?.registerUndo(withTarget: controller) { $0.duplicate(url) }
             } catch {
                 controller.present(error)
             }
@@ -154,6 +160,7 @@ extension ViewerWindowController {
 
     @objc func moveToFolder(_ sender: Any?) {
         guard !isEditing, let url = currentURL else { return }
+        guard !currentFileIsEditedElsewhere else { return refuseWhileEditedElsewhere() }
         chooseFolder(prompt: "Move", message: "Choose a folder to move “\(url.lastPathComponent)” to") { [weak self] folder in
             self?.transfer(url, to: folder, moving: true)
         }
@@ -198,6 +205,19 @@ extension ViewerWindowController {
         }
         let place = "“\(folder.lastPathComponent)”"
         guard moving else {
+            // Undo takes the copy away again, to the Trash, and redo makes it once more.
+            window?.undoManager?.registerUndo(withTarget: self) { controller in
+                do {
+                    try FileManager.default.trashItem(at: destination, resultingItemURL: nil)
+                    controller.browser?.remove(destination)
+                    controller.window?.undoManager?.registerUndo(withTarget: controller) {
+                        $0.transfer(url, to: folder, moving: false)
+                    }
+                } catch {
+                    controller.present(error)
+                }
+            }
+            window?.undoManager?.setActionName("Copy to Folder")
             showToast("Copied to \(place)")
             return destination
         }
@@ -207,6 +227,9 @@ extension ViewerWindowController {
             do {
                 try FileManager.default.moveItem(at: destination, to: url)
                 controller.browser?.insert(url, select: true)
+                controller.window?.undoManager?.registerUndo(withTarget: controller) {
+                    $0.transfer(url, to: folder, moving: true)
+                }
             } catch {
                 controller.present(error)
             }

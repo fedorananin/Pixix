@@ -56,7 +56,7 @@ choose **File › Get Info**, pick the app under **Open With** and press **Chang
 | Pan a zoomed image | Drag, or two fingers |
 | Full screen | `F` |
 | Play or pause an animation | `Space`; `,` and `.` step frame by frame |
-| Rotate the file | `⌘R`, `⌘L` |
+| Rotate the file | `⌘R`, `⌘L`; `⌘Z` gives back the file exactly as it was |
 | Move to Trash | `⌘⌫` or `Delete`; `⌘Z` brings it back |
 | Rename | `F2` |
 | Duplicate, copy to a folder, move to a folder | `⇧⌘D`, `⌃⌘C`, `⌃⌘M`; all can be undone |
@@ -75,7 +75,7 @@ them share one instead. A right click on the picture brings up the commands for 
 | Command | Shortcut | What it does |
 |---|---|---|
 | Save | `⌘S` | Overwrites the file being edited, in its own format. The first Save of a session leaves the file as it was in the Trash |
-| Save As… | `⇧⌘S` | Saves a copy; the original is untouched |
+| Save As… | `⇧⌘S` | Saves a copy; the original is untouched. Editing goes on in the copy, unless it was made smaller |
 | Save as Pixix Project… | `⌥⇧⌘S` | Saves a `.pixix` project that keeps the layers |
 | Export… | `⇧⌘E` | Format, size, quality, with the resulting file size shown live |
 | Export Again | `⌘E` | Repeats the last export next to the original, no questions |
@@ -90,7 +90,7 @@ other with all frames. Everything macOS can decode is read, including RAW, PSD a
 Press **Edit** (`⌘↩`). The left strip holds the tools, the right panel their options, the layer's properties,
 adjustment sliders, the layer list and the history.
 
-- **Crop** (`C`): free or fixed ratio, straighten, and drag the frame past the edge to extend the canvas. The arrow keys move the edge or corner dragged last by a pixel (ten with Shift), for trimming a border or a scroll bar.
+- **Crop** (`C`): free or fixed ratio, straighten, and drag the frame past the edge to extend the canvas. The arrow keys move the edge or corner dragged last by a pixel (ten with Shift), for trimming a border or a scroll bar. `⌘Z` takes back a move of the frame. `Return` applies the crop; so do switching to another tool and saving, and **Done** asks before it lets an unapplied frame go.
 - **Markup**: arrow (`A`), line, rectangle (`R`), ellipse (`U`), pen (`P`), highlighter (`H`), text (`T`),
   speech bubble (`Y`), numbered badge (`Q`), blur area (`J`), pixelate area (`K`), spotlight (`Z`), which
   darkens everything around an area. These stay editable objects until rasterized, and text and shapes can
@@ -108,7 +108,7 @@ adjustment sliders, the layer list and the history.
 - **Image**, **Adjustments** and **Effects** menus: resize, canvas size, rotate, flip, levels, curves, blurs,
   noise, distortions and more, each with a live preview.
 
-Hold `Space` to pan. `X` swaps the two colors. `[` and `]` change the brush size.
+The mouse wheel scrolls while editing (`⇧` for sideways), and zooms with `⌘` or `⌥` held. Hold `Space` or the middle mouse button to drag the picture. `X` swaps the two colors. `[` and `]` change the brush size.
 
 ## Screenshots
 
@@ -134,7 +134,8 @@ Press the shortcut (`⇧⌘2` unless you chose another) and the screen freezes:
 | Save | `⌘S` saves to the folder chosen in Settings (`~/Pictures/Screenshots`); `⇧⌘S` asks where |
 | Copy the text in the selection | `⇧⌘C` |
 | Continue in the full editor | `⌘E`. The markup arrives as layers, still editable |
-| Back out | `Esc` or a right click |
+| Undo | `⌘Z` takes back markup and changes of the selection alike, in the order they were made |
+| Back out | `Esc` or a right click. With markup on the screen a right click does nothing and `Esc` has to be pressed twice |
 
 The proportions, the tool, the color and the line width are remembered for the next screenshot. **Start Pixix
 at login** in Settings keeps the shortcut working after a restart. `⌘Q` quits Pixix entirely, shortcut

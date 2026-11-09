@@ -11,6 +11,12 @@ protocol CanvasViewDelegate: AnyObject {
     func canvas(_ canvas: CanvasView, didReceive pasteboard: NSPasteboard, at imagePoint: CGPoint) -> Bool
     /// The menu for a right click.
     func canvas(_ canvas: CanvasView, menuAt imagePoint: CGPoint) -> NSMenu?
+    /// A mouse wheel turned in the editor while the whole picture is in view, so there was nothing to scroll.
+    func canvasWheelHadNothingToScroll(_ canvas: CanvasView)
+}
+
+extension CanvasViewDelegate {
+    func canvasWheelHadNothingToScroll(_ canvas: CanvasView) {}
 }
 
 /// Receives pointer input in image coordinates while the editor is active.
@@ -344,6 +350,10 @@ final class CanvasView: NSView {
     }
 
     private var canPanHorizontally: Bool { contentSize.width * scale > bounds.width + 0.5 }
+    private var canPanVertically: Bool { contentSize.height * scale > bounds.height + 0.5 }
+
+    /// Points a line of a notched mouse wheel scrolls the editor by.
+    private static let wheelLine: CGFloat = 32
 
     private func isAtHorizontalEdge(movingContentLeft: Bool) -> Bool {
         let rect = imageRect
@@ -402,15 +412,15 @@ final class CanvasView: NSView {
         return overImage
     }
 
-    /// A notched mouse wheel. Over the picture it zooms, anywhere else it pages through the folder, and a
-    /// sideways wheel always pages. `overImage` is false for the background and for the controls laid over the canvas.
+    /// A notched mouse wheel. In the viewer it zooms over the picture, pages through the folder anywhere else, and
+    /// a sideways wheel always pages. `overImage` is false for the background and for the controls laid over the canvas.
     func mouseWheel(with event: NSEvent, overImage: Bool) {
         let dx = event.scrollingDeltaX, dy = event.scrollingDeltaY
+        guard allowsNavigation else {
+            editorWheel(with: event)
+            return
+        }
         if abs(dx) > abs(dy) {
-            guard allowsNavigation else {
-                pan(by: CGPoint(x: dx * 10, y: 0))
-                return
-            }
             // A tilt wheel repeats while it is held and a thumb wheel has no notches; neither should race through the folder.
             guard event.timestamp - lastSidewaysWheel > 0.1 else { return }
             lastSidewaysWheel = event.timestamp
@@ -418,15 +428,35 @@ final class CanvasView: NSView {
             return
         }
         guard dy != 0 else { return }
-        let zooms = event.modifierFlags.contains(.command)
-            || (Settings.shared.wheelZooms && (overImage || !allowsNavigation))
+        let zooms = event.modifierFlags.contains(.command) || (Settings.shared.wheelZooms && overImage)
         if zooms {
             zoomNotch(dy > 0 ? 1 : -1, anchor: convert(event.locationInWindow, from: nil))
-        } else if allowsNavigation, !overImage || isFitted {
+        } else if !overImage || isFitted {
             delegate?.canvas(self, navigateBy: dy < 0 ? 1 : -1)
         } else {
-            pan(by: CGPoint(x: 0, y: dy * 10))
+            pan(by: CGPoint(x: 0, y: dy * Self.wheelLine))
         }
+    }
+
+    /// The editor scrolls with the wheel, as every editor does, and Shift scrolls sideways (macOS turns a Shift
+    /// wheel into a sideways one). ⌘ or ⌥ zooms. A picture that fits whole along an axis does not drift along it.
+    private func editorWheel(with event: NSEvent) {
+        guard !locksView else { return }
+        let dx = event.scrollingDeltaX, dy = event.scrollingDeltaY
+        if !event.modifierFlags.intersection([.command, .option]).isEmpty {
+            let delta = abs(dy) >= abs(dx) ? dy : dx
+            guard delta != 0 else { return }
+            zoomNotch(delta > 0 ? 1 : -1, anchor: convert(event.locationInWindow, from: nil))
+            return
+        }
+        var delta = CGPoint(x: canPanHorizontally ? dx : 0, y: canPanVertically ? dy : 0)
+        // A wide picture that is all in view from top to bottom scrolls sideways with the ordinary wheel.
+        if delta == .zero, dx == 0, canPanHorizontally { delta.x = dy }
+        guard delta != .zero else {
+            if dx != 0 || dy != 0 { delegate?.canvasWheelHadNothingToScroll(self) }
+            return
+        }
+        pan(by: CGPoint(x: delta.x * Self.wheelLine, y: delta.y * Self.wheelLine))
     }
 
     override func magnify(with event: NSEvent) {
@@ -515,6 +545,33 @@ final class CanvasView: NSView {
         if usesTool(event) {
             toolHandler?.toolMouseMoved(to: imagePoint(fromView: location), event: event)
         }
+    }
+
+    /// The middle button drags the picture in the editor, whatever the tool, as Space does.
+    override func otherMouseDown(with event: NSEvent) {
+        guard event.buttonNumber == 2, toolHandler != nil, !locksView else {
+            super.otherMouseDown(with: event)
+            return
+        }
+        isPanningWithMouse = true
+        lastDragLocation = convert(event.locationInWindow, from: nil)
+        NSCursor.closedHand.set()
+    }
+
+    override func otherMouseDragged(with event: NSEvent) {
+        guard isPanningWithMouse else {
+            super.otherMouseDragged(with: event)
+            return
+        }
+        mouseDragged(with: event)
+    }
+
+    override func otherMouseUp(with event: NSEvent) {
+        guard isPanningWithMouse, event.buttonNumber == 2 else {
+            super.otherMouseUp(with: event)
+            return
+        }
+        mouseUp(with: event)
     }
 
     override func mouseExited(with event: NSEvent) {

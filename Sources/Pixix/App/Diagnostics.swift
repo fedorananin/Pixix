@@ -43,8 +43,8 @@ extension ViewerWindowController {
 
     /// Scripted scenarios for snapshots. `done` is called when the window is ready to be photographed.
     ///
-    /// In the viewer: `mouse`, `windows`, `files`, `livetext`, `info`, `menu`, and for screenshots `capture`,
-    /// `capture-full`, `capture-window`, `capture-edit`, `capture-save`, `capture-text`, and for measuring
+    /// In the viewer: `mouse`, `windows`, `files`, `rotate-undo`, `livetext`, `info`, `menu`, and for screenshots `capture`,
+    /// `capture-full`, `capture-window`, `capture-edit`, `capture-save`, `capture-text`, `capture-undo`, and for measuring
     /// memory `capture-open` (the overlay alone), `capture-closed` (after it is dismissed) and `capture-repeat`
     /// (eight captures in a row); for the color picker `picker` (the magnifier moved by the pointer and the
     /// arrow keys, with the color printed at each step), `picker-all` (the same with every notation on show), `picker-closed` (after it is dismissed, for memory) and
@@ -52,7 +52,7 @@ extension ViewerWindowController {
     /// screenshot options, `settings-colors` and `settings-general` are its other pages, and `shortcut` records
     /// shortcuts on it.
     /// With `--edit`: `meme`, `tools`, `markup`, `text`, `layers`, `append`, `subject`, `cutout`, `save`, `crop`,
-    /// `crop-trim`, `crop-applied`, `select`, `effect`, `export`, `menu`.
+    /// `crop-trim`, `crop-undo`, `crop-applied`, `safety`, `select`, `effect`, `export`, `menu`.
     func runDemoScript(_ name: String, done: @escaping @MainActor () -> Void) {
         switch name {
         case "mouse":
@@ -91,6 +91,13 @@ extension ViewerWindowController {
             return
         case "capture-save":
             runCaptureSaveScript(done: done)
+            return
+        case "rotate-undo":
+            runRotateUndoScript(done: done)
+            return
+        case "capture-undo":
+            runCaptureUndoScript()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { done() }
             return
         case "picker", "picker-all", "picker-closed":
             runPickerScript(name)
@@ -370,6 +377,53 @@ extension ViewerWindowController {
     /// Selects a part of the picture, marks it up through the entry points real mouse input uses, and prints
     /// what would be copied. `capture-full` takes the whole display, where the panels have to move inside;
     /// `capture-window` clicks a window; `capture-edit` then hands the result to the editor in this window.
+    /// Moves the selection and draws an arrow, takes both back with ⌘Z in the order they were done and brings
+    /// them back again, then presses Escape twice: the first only warns, as there is markup.
+    private func runCaptureUndoScript() {
+        guard let (screen, size) = beginScriptedCapture() else { return }
+        func event(_ type: NSEvent.EventType) -> NSEvent {
+            NSEvent.mouseEvent(
+                with: type, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+                eventNumber: 0, clickCount: 1, pressure: 1
+            )!
+        }
+        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: size.width * x, y: size.height * y) }
+        func drag(_ a: CGPoint, _ b: CGPoint) {
+            screen.toolMouseDown(at: a, event: event(.leftMouseDown))
+            screen.toolMouseDragged(to: CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2), event: event(.leftMouseDragged))
+            screen.toolMouseDragged(to: b, event: event(.leftMouseDragged))
+            screen.toolMouseUp(at: b, event: event(.leftMouseUp))
+        }
+        func report(_ label: String) {
+            let s = screen.selection ?? .zero
+            print("capture-undo: \(label): selection \(Int(s.minX)),\(Int(s.minY)) \(Int(s.width))×\(Int(s.height)), layers \(screen.editor?.document.layers.map(\.name) ?? []), can undo \(screen.canUndo), open \(CaptureAgent.shared.session != nil)")
+        }
+        let savedAspect = Settings.shared.captureAspect
+        defer { Settings.shared.captureAspect = savedAspect }
+        screen.model.aspect = nil
+        drag(point(0.2, 0.2), point(0.6, 0.6))
+        report("selected")
+        screen.choose(.arrow, in: .arrow)
+        drag(point(0.24, 0.3), point(0.32, 0.24))
+        report("arrow drawn")
+        screen.choose(.move, in: .pointer)
+        // On bare screen, well away from the arrow, so the drag moves the selection and not the markup.
+        drag(point(0.55, 0.55), point(0.6, 0.6))
+        report("selection moved")
+        screen.undo()
+        report("⌘Z")
+        screen.undo()
+        report("⌘Z")
+        screen.redo()
+        report("⇧⌘Z")
+        screen.redo()
+        report("⇧⌘Z")
+        screen.requestCancel()
+        report("Escape")
+        screen.requestCancel()
+        report("Escape again")
+    }
+
     private func runCaptureScript(_ name: String) {
         guard let (screen, size) = beginScriptedCapture() else { return }
         let w = size.width, h = size.height
@@ -510,25 +564,65 @@ extension ViewerWindowController {
             let onDisk = ((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []).filter { !$0.hasPrefix(".") }.sorted()
             print("\(label): showing \(currentURL?.lastPathComponent ?? "-"), list \(browser?.files.map(\.lastPathComponent) ?? []), disk \(onDisk)")
         }
+        // Each action is a step of undo of its own, as when a person does them one after another; in one
+        // pass of the event loop they would otherwise make a single group.
+        let undo = window?.undoManager
+        undo?.groupsByEvent = false
+        defer { undo?.groupsByEvent = true }
+        func step(_ action: () -> Void) {
+            undo?.beginUndoGrouping()
+            action()
+            undo?.endUndoGrouping()
+        }
         report("start")
-        let renamed = rename(url, to: "renamed picture")
+        var renamed: URL?
+        step { renamed = rename(url, to: "renamed picture") }
         report("rename")
-        if let renamed { rename(renamed, to: "RENAMED picture." + renamed.pathExtension) }
+        if let renamed { step { rename(renamed, to: "RENAMED picture." + renamed.pathExtension) } }
         report("rename, case only and with the extension typed")
-        duplicateFile(nil)
+        step { duplicateFile(nil) }
         report("duplicate")
         let sub = folder.appendingPathComponent("sorted", isDirectory: true)
         try? FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
-        if let current = currentURL { transfer(current, to: sub, moving: false) }
+        if let current = currentURL { step { transfer(current, to: sub, moving: false) } }
         report("copy to folder")
-        if let current = currentURL { transfer(current, to: sub, moving: true) }
+        if let current = currentURL { step { transfer(current, to: sub, moving: true) } }
         report("move to folder")
         print("sorted: \(((try? FileManager.default.contentsOfDirectory(atPath: sub.path)) ?? []).sorted())")
-        for step in 1...4 {
+        for index in 1...6 {
             guard window?.undoManager?.canUndo == true else { break }
             let name = window?.undoManager?.undoActionName ?? ""
             window?.undoManager?.undo()
-            report("undo \(step) (\(name))")
+            report("undo \(index) (\(name))")
+        }
+        for index in 1...2 {
+            guard window?.undoManager?.canRedo == true else { break }
+            let name = window?.undoManager?.redoActionName ?? ""
+            window?.undoManager?.redo()
+            report("redo \(index) (\(name))")
+        }
+    }
+
+    /// Turns the file, takes the turn back and turns it again. Changes the file it is given: run it on a copy.
+    private func runRotateUndoScript(done: @escaping @MainActor () -> Void) {
+        guard let url = currentURL, let original = try? Data(contentsOf: url) else { return done() }
+        func state(_ label: String) {
+            let info = try? ImageSource(url: url).info
+            let same = (try? Data(contentsOf: url)) == original
+            print("rotate-undo: \(label): \(Int(info?.pixelSize.width ?? 0))×\(Int(info?.pixelSize.height ?? 0)), orientation \(info?.orientation ?? 0), bytes as at the start \(same)")
+        }
+        state("start")
+        rotateRight(nil)
+        wait(for: { [weak self] in self?.window?.undoManager?.canUndo == true }) { [weak self] in
+            guard let self else { return done() }
+            state("turned right")
+            self.window?.undoManager?.undo()
+            state("⌘Z")
+            self.window?.undoManager?.redo()
+            self.wait(for: { [weak self] in self?.window?.undoManager?.canUndo == true }) {
+                state("⇧⌘Z")
+                done()
+            }
         }
     }
 
@@ -612,6 +706,136 @@ extension ViewerWindowController {
         report("whole frame, ↓")
     }
 
+    /// Sets a crop frame and takes it back with ⌘Z, then leaves it unapplied and checks that leaving the tool
+    /// applies it; then turns the mouse wheel over the editor, plain and with ⌘. Prints the state after each step.
+    private func runCropUndoScript() {
+        guard let editor, let window, let screen = NSScreen.screens.first else { return }
+        let document = editor.document
+        let size = document.size
+        editor.model.tool = .crop
+        editor.model.cropAspect = .free
+        var clock: TimeInterval = 100
+        func mouse(_ type: NSEvent.EventType) -> NSEvent {
+            NSEvent.mouseEvent(
+                with: type, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+                eventNumber: 0, clickCount: 1, pressure: 1
+            )!
+        }
+        func drag(from start: CGPoint, by delta: CGPoint) {
+            editor.toolMouseDown(at: start, event: mouse(.leftMouseDown))
+            editor.toolMouseDragged(to: start + delta, event: mouse(.leftMouseDragged))
+            editor.toolMouseUp(at: start + delta, event: mouse(.leftMouseUp))
+        }
+        func key(_ code: UInt16, after pause: TimeInterval = 0.1) {
+            clock += pause
+            guard let event = NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: [], timestamp: clock, windowNumber: 0,
+                context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: code
+            ) else { return }
+            _ = editor.handleKeyDown(event)
+        }
+        func menuTitle(_ action: Selector) -> String {
+            let item = NSMenuItem(title: "", action: action, keyEquivalent: "")
+            return validateMenuItem(item) ? item.title : "[\(item.title)]"
+        }
+        func report(_ step: String) {
+            let r = editor.model.cropRect
+            print("crop-undo: \(step): frame \(Int(r.minX)),\(Int(r.minY)) \(Int(r.width))×\(Int(r.height)), picture \(Int(document.size.width))×\(Int(document.size.height)), pending \(editor.hasPendingCrop), \(menuTitle(#selector(undoEdit(_:)))) / \(menuTitle(#selector(redoEdit(_:)))), Done asks \(editor.hasUnsavedWork)")
+        }
+        report("start")
+        drag(from: CGPoint(x: size.width, y: size.height / 2), by: CGPoint(x: -size.width * 0.2, y: 0))
+        report("right edge dragged in")
+        drag(from: CGPoint(x: size.width * 0.4, y: size.height / 2), by: CGPoint(x: -size.width * 0.1, y: 0))
+        report("frame moved")
+        key(125); key(125); key(125)
+        report("↓ three times")
+        undoEdit(nil)
+        report("⌘Z")
+        undoEdit(nil)
+        report("⌘Z")
+        undoEdit(nil)
+        report("⌘Z")
+        redoEdit(nil)
+        redoEdit(nil)
+        report("⇧⌘Z twice")
+        key(53, after: 2)
+        report("Escape")
+        undoEdit(nil)
+        report("⌘Z")
+        editor.model.tool = .brush
+        report("switched to the brush")
+        undoEdit(nil)
+        report("⌘Z")
+
+        // The wheel: events go to the window, the way real ones do.
+        canvas.fit()
+        func origin() -> String {
+            let rect = canvas.imageRect
+            return "\(canvas.zoomPercent)% at \(Int(rect.minX)),\(Int(rect.minY))"
+        }
+        func turn(_ label: String, vertical: Int32, flags: CGEventFlags = []) {
+            guard let cgEvent = CGEvent(
+                scrollWheelEvent2Source: nil, units: .line, wheelCount: 2, wheel1: vertical, wheel2: 0, wheel3: 0
+            ) else { return }
+            let inWindow = canvas.convert(CGPoint(x: canvas.bounds.midX, y: canvas.bounds.midY), to: nil)
+            cgEvent.location = CGPoint(x: inWindow.x, y: screen.frame.height - inWindow.y)
+            cgEvent.flags = flags
+            guard let event = NSEvent(cgEvent: cgEvent) else { return }
+            window.sendEvent(event)
+            print("crop-undo: wheel \(label): \(origin())")
+        }
+        print("crop-undo: wheel start: \(origin())")
+        turn("down, picture fits", vertical: -1)
+        for _ in 0..<14 { turn("up with ⌘", vertical: 3, flags: .maskCommand) }
+        turn("down", vertical: -3)
+        turn("down", vertical: -3)
+        turn("up", vertical: 3)
+        turn("down with ⌥", vertical: -3, flags: .maskAlternate)
+        editor.model.tool = .crop
+    }
+
+    /// What a stray click must not do: leave a "Text" layer behind, or cut the selected pixels onto a layer.
+    private func runSafetyScript() {
+        guard let editor else { return }
+        let document = editor.document
+        let size = document.size
+        func mouse(_ type: NSEvent.EventType) -> NSEvent {
+            NSEvent.mouseEvent(
+                with: type, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+                eventNumber: 0, clickCount: 1, pressure: 1
+            )!
+        }
+        func drag(_ a: CGPoint, _ b: CGPoint) {
+            editor.toolMouseDown(at: a, event: mouse(.leftMouseDown))
+            if a != b { editor.toolMouseDragged(to: b, event: mouse(.leftMouseDragged)) }
+            editor.toolMouseUp(at: b, event: mouse(.leftMouseUp))
+        }
+        func report(_ label: String) {
+            print("safety: \(label): layers \(document.layers.map(\.name)), selection \(document.selection != nil), undo \(document.history.undoName ?? "-"), redo \(document.history.redoName ?? "-")")
+        }
+        let middle = CGPoint(x: size.width / 2, y: size.height / 2)
+        editor.model.tool = .text
+        drag(middle, middle)
+        report("text tool clicked")
+        editor.finishTyping()
+        report("typing ended with nothing typed")
+        drag(middle, middle)
+        editor.typeText("Kept")
+        editor.finishTyping()
+        report("clicked and typed")
+        document.undo()
+        editor.model.tool = .selectEllipse
+        drag(CGPoint(x: 0, y: 0), CGPoint(x: size.width, y: size.height))
+        editor.model.tool = .move
+        document.setActiveLayer(document.layers.first?.id)
+        drag(middle, middle)
+        report("move tool clicked inside the selection")
+        let corner = CGPoint(x: 3, y: 3)
+        print("safety: corner of the ellipse's box is in the selection: \(document.selection?.contains(corner) ?? false)")
+        drag(middle, CGPoint(x: middle.x + size.width / 8, y: middle.y))
+        report("move tool dragged inside the selection")
+    }
+
     private func runEditorScript(_ name: String) {
         guard let editor else { return }
         let document = editor.document
@@ -623,6 +847,10 @@ extension ViewerWindowController {
             editor.model.straighten = 12
         case "crop-trim":
             runCropTrimScript()
+        case "crop-undo":
+            runCropUndoScript()
+        case "safety":
+            runSafetyScript()
         case "crop-applied":
             editor.model.tool = .crop
             editor.model.cropAspect = .r16x9

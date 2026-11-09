@@ -187,7 +187,7 @@ struct CaptureToolsView: View {
                 hintTag(for: "undo")
                 // Reading the revision keeps the button in step with the history.
                 PanelButton(
-                    symbol: "arrow.uturn.backward", isEnabled: tools.revision >= 0 && screen.canUndo, help: "Undo (⌘Z)"
+                    symbol: "arrow.uturn.backward", isEnabled: tools.revision >= 0 && model.selectionRevision >= 0 && screen.canUndo, help: "Undo (⌘Z)"
                 ) {
                     screen.undo()
                 }

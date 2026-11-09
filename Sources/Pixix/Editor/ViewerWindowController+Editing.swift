@@ -101,7 +101,7 @@ extension ViewerWindowController {
     /// Leaves the editor, asking about unsaved changes first.
     func finishEditing() {
         guard let editor else { return }
-        guard editor.isDirty else {
+        guard editor.hasUnsavedWork else {
             stopEditing()
             return
         }
@@ -115,6 +115,7 @@ extension ViewerWindowController {
         let hadFile = currentURL != nil
         editor.deactivate()
         self.editor = nil
+        fieldUndoManager.removeAllActions()
         leftPanel.subviews.forEach { $0.removeFromSuperview() }
         rightPanel.subviews.forEach { $0.removeFromSuperview() }
         setPanels(left: 0, right: 0)
@@ -137,11 +138,20 @@ extension ViewerWindowController {
             return
         }
         let alert = NSAlert()
-        alert.messageText = "Save the changes to this picture?"
-        alert.informativeText = editor.fileURL != nil
-            ? "Saving overwrites “\(editor.fileURL!.lastPathComponent)”. Your changes are lost if you don't save them."
-            : "Your changes are lost if you don't save them."
-        alert.addButton(withTitle: editor.fileURL != nil ? "Save" : "Save As…")
+        let name = editor.fileURL?.lastPathComponent
+        if editor.hasPendingCrop {
+            // The frame on screen looks like the result, so say plainly that it is not one yet.
+            alert.messageText = "Apply the crop and save the picture?"
+            alert.informativeText = (name.map { "The crop frame is not applied yet. Saving crops the picture and overwrites “\($0)”." }
+                ?? "The crop frame is not applied yet. Saving crops the picture first.")
+                + " If you don't save, the picture stays as it was last saved."
+            alert.addButton(withTitle: name != nil ? "Crop and Save" : "Crop and Save As…")
+        } else {
+            alert.messageText = "Save the changes to this picture?"
+            alert.informativeText = name.map { "Saving overwrites “\($0)”. Your changes are lost if you don't save them." }
+                ?? "Your changes are lost if you don't save them."
+            alert.addButton(withTitle: name != nil ? "Save" : "Save As…")
+        }
         alert.addButton(withTitle: "Cancel")
         alert.addButton(withTitle: "Don't Save")
         alert.buttons.last?.hasDestructiveAction = true
@@ -154,8 +164,8 @@ extension ViewerWindowController {
                     // The write is asynchronous; leave once it has landed.
                     self.waitUntilSaved(completion)
                 } else {
-                    self.saveDocumentAs(nil)
-                    completion(false)
+                    // Closing goes on once the picture is in a file; cancelling the dialog keeps the window.
+                    self.saveDocumentAs { saved in completion(saved && self.editor?.hasUnsavedWork != true) }
                 }
             case .alertThirdButtonReturn:
                 completion(true)
@@ -170,7 +180,7 @@ extension ViewerWindowController {
             completion(true)
             return
         }
-        if !editor.isDirty {
+        if !editor.hasUnsavedWork {
             completion(true)
         } else if attempts < 100 {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
@@ -226,17 +236,28 @@ extension ViewerWindowController {
 
     // MARK: Edit menu
 
+    /// While a field of the panels has the keyboard, ⌘Z belongs to what was typed into it, not to the picture.
+    /// The text view that takes typing on the canvas is not such a field: its typing is the document's history.
+    var typingFieldUndo: UndoManager? {
+        guard isEditing, let field = window?.firstResponder as? NSTextView, field.allowsUndo else { return nil }
+        return fieldUndoManager
+    }
+
     @objc func undoEdit(_ sender: Any?) {
-        if let editor {
-            editor.document.undo()
+        if let fields = typingFieldUndo, fields.canUndo {
+            fields.undo()
+        } else if let editor {
+            editor.undo()
         } else {
             window?.undoManager?.undo()
         }
     }
 
     @objc func redoEdit(_ sender: Any?) {
-        if let editor {
-            editor.document.redo()
+        if let fields = typingFieldUndo, fields.canRedo {
+            fields.redo()
+        } else if let editor {
+            editor.redo()
         } else {
             window?.undoManager?.redo()
         }

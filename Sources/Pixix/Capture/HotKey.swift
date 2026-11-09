@@ -59,14 +59,15 @@ struct KeyCombo: Codable, Hashable {
         let isFunctionKey = Self.functionKeys.contains(code)
         guard isFunctionKey || !flags.isDisjoint(with: [.command, .option, .control]) else { return nil }
         // The name is for showing only; a key that cannot be named still makes a shortcut.
-        let label = Self.namedKeys[code] ?? Self.latinLabel(for: event.keyCode)
+        let label = Self.namedKeys[code] ?? KeyCombo.latinCharacters(for: event.keyCode)?.uppercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
             ?? event.charactersIgnoringModifiers?.uppercased().trimmingCharacters(in: .whitespacesAndNewlines)
         self.init(keyCode: UInt32(code), modifiers: flags.rawValue, keyLabel: label.flatMap { $0.isEmpty ? nil : $0 } ?? "Key \(code)")
     }
 
     /// What the key types on the Latin layout of this keyboard, which is how macOS writes shortcuts in menus
-    /// whatever language is being typed.
-    private static func latinLabel(for keyCode: UInt16) -> String? {
+    /// whatever language is being typed. Without Shift.
+    static func latinCharacters(for keyCode: UInt16) -> String? {
         guard let source = TISCopyCurrentASCIICapableKeyboardLayoutInputSource()?.takeRetainedValue(),
               let property = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData)
         else { return nil }
@@ -82,8 +83,7 @@ struct KeyCombo: Codable, Hashable {
             )
         }
         guard status == noErr, length > 0 else { return nil }
-        let label = String(utf16CodeUnits: characters, count: length).uppercased().trimmingCharacters(in: .whitespacesAndNewlines)
-        return label.isEmpty ? nil : label
+        return String(utf16CodeUnits: characters, count: length)
     }
 
     /// The modifiers alone, as they are shown while a shortcut is being typed.
@@ -205,5 +205,20 @@ final class GlobalHotKey {
                 return noErr
             }
         }, 1, &spec, owner, &handler)
+    }
+}
+
+extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
+}
+
+extension NSEvent {
+    /// The key as the Latin layout of this keyboard has it, for single-key shortcuts: `B` picks the brush on a
+    /// Russian layout as well, where the same key types a Cyrillic letter. Typed characters that are Latin
+    /// already, Shift and all, are taken as they are.
+    var latinCharactersIgnoringModifiers: String? {
+        let typed = charactersIgnoringModifiers
+        if let typed, !typed.isEmpty, typed.unicodeScalars.allSatisfy(\.isASCII) { return typed }
+        return KeyCombo.latinCharacters(for: keyCode) ?? typed
     }
 }

@@ -110,6 +110,8 @@ final class CaptureModel {
     /// A line next to the buttons: what is going on, or what went wrong.
     var status: String?
     var isBusy = false
+    /// Changes whenever the selection's own undo list does, so the Undo button follows it.
+    var selectionRevision = 0
 
     func tool(of group: CaptureToolGroup) -> ToolKind {
         chosen[group] ?? group.tools[0]

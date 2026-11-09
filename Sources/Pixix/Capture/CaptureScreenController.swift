@@ -102,7 +102,7 @@ final class CaptureScreenController: NSObject, CanvasToolHandler, CanvasViewDele
         panel.level = NSWindow.Level(rawValue: NSWindow.Level.popUpMenu.rawValue - 1)
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         panel.keyEquivalentHandler = { [weak self] in self?.handleKeyEquivalent($0) ?? false }
-        panel.cancelHandler = { [weak self] in self?.cancel() }
+        panel.cancelHandler = { [weak self] in self?.requestCancel() }
 
         content.frame = CGRect(origin: .zero, size: shot.frame.size)
         content.onMouseEntered = { [weak self] in self?.pointerEntered() }
@@ -177,6 +177,29 @@ final class CaptureScreenController: NSObject, CanvasToolHandler, CanvasViewDele
         session.end()
     }
 
+    /// When Escape was pressed with markup on the screen; a second press soon after throws it away.
+    private var discardRequested: TimeInterval?
+
+    /// Escape and ⌘W. An open popup closes first. Markup is work, so it goes only on a second press: a single
+    /// Escape meant for a popup or for the end of typing must not take it all.
+    func requestCancel() {
+        if model.flyout != nil {
+            model.flyout = nil
+            return
+        }
+        guard hasMarkup else {
+            cancel()
+            return
+        }
+        let now = ProcessInfo.processInfo.systemUptime
+        if let discardRequested, now - discardRequested < 2.5 {
+            cancel()
+            return
+        }
+        discardRequested = now
+        showToast("Press Escape again to throw the markup away")
+    }
+
     // MARK: The selection
 
     var hasMarkup: Bool { (editor?.document.layers.count ?? 0) > 1 }
@@ -186,6 +209,23 @@ final class CaptureScreenController: NSObject, CanvasToolHandler, CanvasViewDele
             x: rect.minX.rounded(), y: rect.minY.rounded(), width: max(rect.width.rounded(), 1), height: max(rect.height.rounded(), 1)
         )
         return FrameGeometry.moved(whole, into: bounds)
+    }
+
+    /// Earlier selections, for ⌘Z. The selection is not part of the document, so each is tagged with the length of
+    /// the document's history when it was left: undo takes back whichever came last, a frame or a piece of markup.
+    private var selectionUndo: [(rect: CGRect, position: Int)] = []
+    private var selectionRedo: [(rect: CGRect, position: Int)] = []
+    /// When the arrow keys last moved the selection: a run of presses is one step of undo.
+    private var lastNudge: TimeInterval = 0
+
+    private var historyPosition: Int { editor?.document.history.position ?? 0 }
+
+    /// Keeps `previous` for ⌘Z when the selection has moved away from it.
+    private func recordSelection(_ previous: CGRect?) {
+        guard let previous, let selection, previous != selection else { return }
+        selectionUndo.append((previous, historyPosition))
+        selectionRedo.removeAll()
+        model.selectionRevision += 1
     }
 
     private func setSelection(_ rect: CGRect?) {
@@ -214,7 +254,9 @@ final class CaptureScreenController: NSObject, CanvasToolHandler, CanvasViewDele
     func selectWholeScreen() {
         guard session.maySelect(on: self) else { return }
         session.willSelect(on: self)
+        let previous = selection
         settle(bounds)
+        recordSelection(previous)
     }
 
     func aspectDidChange() {
@@ -223,6 +265,7 @@ final class CaptureScreenController: NSObject, CanvasToolHandler, CanvasViewDele
             return
         }
         setSelection(rounded(FrameGeometry.fitted(selection, ratio: ratio)))
+        recordSelection(selection)
     }
 
     /// Holds the selection to the proportions it has now.
@@ -240,6 +283,7 @@ final class CaptureScreenController: NSObject, CanvasToolHandler, CanvasViewDele
         // An exact size wins over proportions it does not have.
         if let ratio, abs(size.width / size.height - ratio) > 0.01 { model.aspect = nil }
         setSelection(FrameGeometry.sized(selection, to: size, within: bounds))
+        recordSelection(selection)
     }
 
     func apply(_ size: CaptureSize) {
@@ -248,8 +292,10 @@ final class CaptureScreenController: NSObject, CanvasToolHandler, CanvasViewDele
             x: center.x - CGFloat(size.width) / 2, y: center.y - CGFloat(size.height) / 2, width: CGFloat(size.width),
             height: CGFloat(size.height)
         )
+        let previous = selection
         model.aspect = nil
         settle(rect)
+        recordSelection(previous)
     }
 
     func focusCanvas() {
@@ -267,6 +313,13 @@ final class CaptureScreenController: NSObject, CanvasToolHandler, CanvasViewDele
         default: moved.origin.y += step
         }
         setSelection(FrameGeometry.moved(moved, into: bounds))
+        // Presses in quick succession are one move, and one ⌘Z takes all of it back.
+        if event.timestamp - lastNudge > 1 || selectionUndo.isEmpty {
+            recordSelection(selection)
+        } else {
+            selectionRedo.removeAll()
+        }
+        lastNudge = event.timestamp
     }
 
     /// 0...3 corners clockwise from top-left, 4...7 edges from the top. An edge is caught anywhere along it.
@@ -343,16 +396,31 @@ final class CaptureScreenController: NSObject, CanvasToolHandler, CanvasViewDele
         return hosting
     }
 
-    var canUndo: Bool { editor?.document.history.canUndo ?? false }
+    var canUndo: Bool { !selectionUndo.isEmpty || editor?.document.history.canUndo == true }
 
+    /// Takes back the last thing done: a change of the selection, or markup. See `selectionUndo`.
     func undo() {
         editor?.finishTyping()
-        editor?.document.undo()
+        if let last = selectionUndo.last, let selection, last.position >= historyPosition {
+            selectionUndo.removeLast()
+            selectionRedo.append((selection, historyPosition))
+            setSelection(last.rect)
+            model.selectionRevision += 1
+        } else {
+            editor?.document.undo()
+        }
         focusCanvas()
     }
 
     func redo() {
-        editor?.document.redo()
+        if let last = selectionRedo.last, let selection, last.position <= historyPosition {
+            selectionRedo.removeLast()
+            selectionUndo.append((selection, historyPosition))
+            setSelection(last.rect)
+            model.selectionRevision += 1
+        } else {
+            editor?.document.redo()
+        }
     }
 
     /// A click on a group's button: picks its tool, or opens the rest of the group when it is picked already.
@@ -540,6 +608,7 @@ final class CaptureScreenController: NSObject, CanvasToolHandler, CanvasViewDele
         case .new(_, let previous, let moved):
             if moved, let selection, selection.width >= 2, selection.height >= 2 {
                 settle(selection)
+                recordSelection(previous)
             } else if let previous {
                 // A stray click beside the selection leaves it as it was.
                 setSelection(previous)
@@ -548,8 +617,9 @@ final class CaptureScreenController: NSObject, CanvasToolHandler, CanvasViewDele
                 settle(hoveredWindow ?? shot.windows.first { $0.contains(point) } ?? bounds)
             }
             hoveredWindow = nil
-        case .handle, .move:
+        case .handle(_, let original), .move(_, let original):
             if let selection { setSelection(rounded(selection)) }
+            recordSelection(original)
         case .tool:
             editor?.toolMouseUp(at: point, event: event)
         }
@@ -670,7 +740,7 @@ final class CaptureScreenController: NSObject, CanvasToolHandler, CanvasViewDele
         let code = Int(event.keyCode)
         switch code {
         case kVK_Escape:
-            cancel()
+            requestCancel()
         case kVK_Return, kVK_ANSI_KeypadEnter:
             copyImage()
         case kVK_Delete, kVK_ForwardDelete:
@@ -706,7 +776,7 @@ final class CaptureScreenController: NSObject, CanvasToolHandler, CanvasViewDele
         case ([.command], kVK_ANSI_A): selectWholeScreen()
         case ([.command], kVK_ANSI_Z): undo()
         case ([.command, .shift], kVK_ANSI_Z): redo()
-        case ([.command], kVK_ANSI_W): cancel()
+        case ([.command], kVK_ANSI_W): requestCancel()
         default: return false
         }
         return true

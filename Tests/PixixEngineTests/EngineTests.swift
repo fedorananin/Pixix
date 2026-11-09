@@ -552,6 +552,35 @@ func dump(_ document: Document, _ name: String) {
         #expect(pixel(document, 2, 2) == .white)
     }
 
+    /// A point in the box of an ellipse but outside the ellipse itself is not in the selection.
+    @Test func selectionContainsFollowsTheShape() throws {
+        let size = CGSize(width: 100, height: 100)
+        let ellipse = try #require(Selection.ellipse(CGRect(x: 0, y: 0, width: 100, height: 100), in: size))
+        #expect(ellipse.contains(CGPoint(x: 50, y: 50)))
+        #expect(!ellipse.contains(CGPoint(x: 2, y: 2)))
+        #expect(!ellipse.contains(CGPoint(x: 150, y: 50)))
+    }
+
+    /// A save takes its picture first and is done writing later; whatever changed in between is not saved.
+    @Test func changesDuringASaveStayUnsaved() throws {
+        let document = try #require(Document(image: solidImage(width: 8, height: 8, .white)))
+        let id = try #require(document.activeLayerID)
+        document.updateLayer(id, name: "Brightness", key: "brightness") { $0.adjustments.brightness = 0.3 }
+        let marker = document.history.saveMarker()
+        // The same slider again: without the marker this would merge into the step being saved.
+        document.updateLayer(id, name: "Brightness", key: "brightness") { $0.adjustments.brightness = 0.6 }
+        document.history.markSaved(marker)
+        #expect(document.history.isDirty)
+        #expect(document.history.entries.count == 2)
+        document.undo()
+        #expect(!document.history.isDirty)
+
+        // Nothing changed while writing: clean.
+        let quiet = document.history.saveMarker()
+        document.history.markSaved(quiet)
+        #expect(!document.history.isDirty)
+    }
+
     @Test(arguments: EffectCatalog.all.map(\.id))
     func everyEffectRuns(id: String) throws {
         let effect = try #require(EffectCatalog.find(id))

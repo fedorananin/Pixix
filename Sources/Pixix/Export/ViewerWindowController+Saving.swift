@@ -9,6 +9,11 @@ extension ViewerWindowController {
         var source: ExportSource
         var originalBytes: Int?
         var baseURL: URL
+        /// False for a pasted picture or a screenshot: there is no file to save next to.
+        var hasFile = true
+        /// In the editor: the state of the history when the picture was taken, and the size of the document.
+        var marker: History.SaveMarker?
+        var documentSize: CGSize?
     }
 
     /// Everything an export needs: full-resolution pixels (or all frames) and the original metadata.
@@ -16,10 +21,13 @@ extension ViewerWindowController {
         let pictures = FileManager.default.urls(for: .picturesDirectory, in: .userDomainMask).first
             ?? FileManager.default.homeDirectoryForCurrentUser
         if let editor {
-            let base = editor.fileURL ?? currentURL ?? pictures.appendingPathComponent("Untitled.png")
+            // What is saved is what is on screen: a crop frame left unapplied is applied first.
+            editor.commitPendingEdits()
+            let file = editor.fileURL ?? currentURL
             return PreparedSource(
                 source: .image(editor.flattenedImage(), properties: editor.sourceProperties),
-                originalBytes: nil, baseURL: base
+                originalBytes: nil, baseURL: file ?? pictures.appendingPathComponent("Untitled.png"),
+                hasFile: file != nil, marker: editor.document.history.saveMarker(), documentSize: editor.document.size
             )
         }
         guard let url = currentURL else { throw CodecError.cannotDecode }
@@ -43,15 +51,28 @@ extension ViewerWindowController {
     }
 
     @objc func saveDocumentAs(_ sender: Any?) {
+        saveDocumentAs(then: nil)
+    }
+
+    /// Save As. `completion` learns whether the edits are now safely in a file, so that closing can go on.
+    func saveDocumentAs(then completion: ((Bool) -> Void)?) {
         var initial = ExportSettings()
         let url = editor?.fileURL ?? currentURL
         initial.format = url.flatMap { ImageFormat(url: $0) } ?? .png
         initial.quality = 0.92
-        presentExportDialog(title: "Save As", confirmTitle: "Save Copy", initial: initial, isSaveAs: true)
+        presentExportDialog(
+            title: "Save As", confirmTitle: "Save Copy", initial: initial, isSaveAs: true, completion: completion
+        )
     }
 
-    private func presentExportDialog(title: String, confirmTitle: String, initial: ExportSettings, isSaveAs: Bool) {
-        guard let window, window.attachedSheet == nil else { return }
+    private func presentExportDialog(
+        title: String, confirmTitle: String, initial: ExportSettings, isSaveAs: Bool,
+        completion: ((Bool) -> Void)? = nil
+    ) {
+        guard let window, window.attachedSheet == nil else {
+            completion?(false)
+            return
+        }
         Task { [weak self, weak window] in
             guard let self, let window else { return }
             do {
@@ -60,6 +81,7 @@ extension ViewerWindowController {
                     title: title, confirmTitle: confirmTitle, source: prepared.source, initial: initial,
                     originalBytes: prepared.originalBytes
                 )
+                model.needsLocation = !prepared.hasFile
                 let sheet = NSWindow(
                     contentRect: .zero, styleMask: [.titled], backing: .buffered, defer: false
                 )
@@ -68,12 +90,15 @@ extension ViewerWindowController {
                     model: model,
                     onCancel: { [weak window, weak sheet] in
                         if let sheet { window?.endSheet(sheet) }
+                        completion?(false)
                     },
                     onConfirm: { [weak self, weak sheet] choosing in
                         guard let self, let sheet else { return }
+                        // A number typed into a field reaches the model only once the field lets go of the keyboard.
+                        sheet.makeFirstResponder(nil)
                         self.finishExport(
-                            model: model, sheet: sheet, baseURL: prepared.baseURL, choosingLocation: choosing,
-                            isSaveAs: isSaveAs
+                            model: model, sheet: sheet, prepared: prepared, choosingLocation: choosing || model.needsLocation,
+                            isSaveAs: isSaveAs, completion: completion
                         )
                     }
                 )
@@ -81,18 +106,22 @@ extension ViewerWindowController {
                 window.beginSheet(sheet, completionHandler: nil)
             } catch {
                 self.present(error)
+                completion?(false)
             }
         }
     }
 
-    private func finishExport(model: ExportModel, sheet: NSWindow, baseURL: URL, choosingLocation: Bool, isSaveAs: Bool) {
+    private func finishExport(
+        model: ExportModel, sheet: NSWindow, prepared: PreparedSource, choosingLocation: Bool, isSaveAs: Bool,
+        completion: ((Bool) -> Void)?
+    ) {
         guard let window else { return }
+        let baseURL = prepared.baseURL
         Task { [weak self] in
             guard let self else { return }
             do {
                 let result = try await model.encode()
                 let ext = model.format.fileExtension
-                window.endSheet(sheet)
                 let destination: URL
                 if choosingLocation {
                     let panel = NSSavePanel()
@@ -100,16 +129,23 @@ extension ViewerWindowController {
                     panel.nameFieldStringValue = baseURL.deletingPathExtension().lastPathComponent + "." + ext
                     if let type = UTType(model.format.typeIdentifier) { panel.allowedContentTypes = [type] }
                     panel.canCreateDirectories = true
-                    guard await panel.beginSheetModal(for: window) == .OK, let chosen = panel.url else { return }
+                    // On the dialog itself: cancelling the panel goes back to the settings instead of losing them.
+                    guard await panel.beginSheetModal(for: sheet) == .OK, let chosen = panel.url else { return }
                     destination = chosen
                 } else {
                     destination = FileWriter.uniqueURL(near: baseURL, fileExtension: ext)
                 }
                 try FileWriter.write(result.data, to: destination)
+                window.endSheet(sheet)
                 Settings.shared.lastExport = model.settings
-                self.didWrite(result, to: destination, adoptAsDocument: isSaveAs)
+                let adopted = self.didWrite(
+                    result, to: destination, adoptAsDocument: isSaveAs, marker: prepared.marker,
+                    documentSize: prepared.documentSize
+                )
+                completion?(adopted)
             } catch {
-                self.present(error)
+                // The dialog stays, with its settings, under the error.
+                NSAlert(error: error).beginSheetModal(for: sheet, completionHandler: nil)
             }
         }
     }
@@ -129,7 +165,7 @@ extension ViewerWindowController {
                 }.value
                 let destination = FileWriter.uniqueURL(near: prepared.baseURL, fileExtension: settings.format.fileExtension)
                 try FileWriter.write(result.data, to: destination)
-                self.didWrite(result, to: destination, adoptAsDocument: false)
+                self.didWrite(result, to: destination, adoptAsDocument: false, marker: nil, documentSize: nil)
             } catch {
                 self.present(error)
             }
@@ -139,6 +175,8 @@ extension ViewerWindowController {
     /// Overwrites the file being edited, in its own format.
     @objc func saveDocument(_ sender: Any?) {
         guard let editor else { return }
+        // What is saved is what is on screen: a crop frame left unapplied is applied first.
+        editor.commitPendingEdits()
         guard let url = editor.fileURL else {
             // Nothing sensible to overwrite: an animation, a pasted image, or a format we cannot write.
             saveDocumentAs(sender)
@@ -159,6 +197,8 @@ extension ViewerWindowController {
             return
         }
         let image = editor.flattenedImage()
+        // What the file will hold is the state now; a change made while it is being written stays unsaved.
+        let marker = editor.document.history.saveMarker()
         let properties = UncheckedBox(editor.sourceProperties)
         Task { [weak self] in
             guard let self else { return }
@@ -173,7 +213,7 @@ extension ViewerWindowController {
                 let keepsOriginal = Settings.shared.keepsOriginalInTrash && self.editor?.fileIsUntouched == true
                 let trashed = try FileWriter.replace(url, with: result.data, trashingOriginal: keepsOriginal)
                 ImageLoader.shared.invalidate(url)
-                self.editor?.markSaved(url: url)
+                self.editor?.markSaved(url: url, marker: marker)
                 let note = trashed != nil ? " · the original is in the Trash" : ""
                 self.showToast("Saved \(url.lastPathComponent) · \(Self.byteText(result.data.count))\(note)")
                 self.updateTitle()
@@ -185,6 +225,7 @@ extension ViewerWindowController {
 
     @objc func saveProjectAs(_ sender: Any?) {
         guard let editor, let window else { return }
+        editor.commitPendingEdits()
         let base = editor.fileURL ?? currentURL
         let panel = NSSavePanel()
         panel.directoryURL = base?.deletingLastPathComponent()
@@ -204,15 +245,28 @@ extension ViewerWindowController {
         }
     }
 
-    private func didWrite(_ result: ExportResult, to destination: URL, adoptAsDocument: Bool) {
+    /// Returns true when the editor now works on the written file. Save As switches to it only when the file holds
+    /// the document as it is: a copy made smaller is an export, and the full-size edit stays unsaved.
+    @discardableResult
+    private func didWrite(
+        _ result: ExportResult, to destination: URL, adoptAsDocument: Bool, marker: History.SaveMarker?,
+        documentSize: CGSize?
+    ) -> Bool {
         ImageLoader.shared.invalidate(destination)
+        var adopted = false
         if adoptAsDocument, let editor {
-            // After Save As the editor works on the new file, like any document app.
-            editor.markSaved(url: destination)
-            browser?.insert(destination, select: true)
-            updateTitle()
+            if let documentSize, result.width == Int(documentSize.width), result.height == Int(documentSize.height) {
+                // After Save As the editor works on the new file, like any document app.
+                editor.markSaved(url: destination, marker: marker)
+                browser?.insert(destination, select: true)
+                updateTitle()
+                adopted = true
+            }
         }
-        showToast("Saved \(destination.lastPathComponent) · \(result.width) × \(result.height) · \(Self.byteText(result.data.count))")
+        var text = "Saved \(destination.lastPathComponent) · \(result.width) × \(result.height) · \(Self.byteText(result.data.count))"
+        if adoptAsDocument, editor != nil, !adopted { text += " · a resized copy, the edit itself is not saved" }
+        showToast(text)
+        return adopted
     }
 
     static func byteText(_ count: Int) -> String {

@@ -18,6 +18,14 @@ public final class Selection: @unchecked Sendable {
 
     public var isEmpty: Bool { bounds.isEmpty }
 
+    /// True when the pixel under a document point is selected, even partly. Its box is not enough: an ellipse or
+    /// a lasso leaves corners of it out.
+    public func contains(_ point: CGPoint) -> Bool {
+        let x = Int(point.x.rounded(.down)), y = Int(point.y.rounded(.down))
+        guard x >= 0, y >= 0, x < width, y < height else { return false }
+        return data[data.startIndex + y * width + x] != 0
+    }
+
     init(width: Int, height: Int, data: Data) {
         self.width = width
         self.height = height

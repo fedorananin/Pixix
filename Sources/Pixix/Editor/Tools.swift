@@ -45,13 +45,22 @@ class EditorTool {
 
 final class MoveTool: EditorTool {
     private lazy var frame = FrameInteraction(editor: editor)
+    /// Where a press inside the selection went down. The pixels are lifted once the pointer really moves:
+    /// a plain click must not cut them onto a layer of their own and drop the selection.
+    private var liftStart: CGPoint?
+
+    /// True when a drag from `point` would lift the selected pixels of the active layer.
+    private func liftsSelection(at point: CGPoint) -> Bool {
+        guard let selection = document.selection, let layer = document.activeLayer else { return false }
+        return layer.isRaster && !layer.isLocked && selection.contains(point)
+    }
 
     override func mouseDown(at point: CGPoint, event: NSEvent) {
+        liftStart = nil
         if frame.beginHandleDrag(at: point) { return }
         // Dragging inside a selection lifts those pixels onto their own layer and moves that.
-        if let selection = document.selection, selection.bounds.contains(point), document.activeLayer?.isRaster == true,
-           document.floatSelection() != nil {
-            frame.beginMove(at: point)
+        if liftsSelection(at: point) {
+            liftStart = point
             return
         }
         guard let hit = layer(at: point) else { return }
@@ -64,16 +73,26 @@ final class MoveTool: EditorTool {
     }
 
     override func mouseDragged(to point: CGPoint, event: NSEvent) {
+        if let start = liftStart {
+            guard start.distance(to: point) * canvas.scale > 3 else { return }
+            liftStart = nil
+            guard document.floatSelection() != nil else { return }
+            frame.beginMove(at: start)
+        }
         frame.drag(to: point, event: event)
     }
 
     override func mouseUp(at point: CGPoint, event: NSEvent) {
+        liftStart = nil
         frame.end()
     }
 
     override func cursor(at point: CGPoint) -> NSCursor {
         if let cursor = frame.cursor(at: point) { return cursor }
-        return layer(at: point) != nil ? .openHand : .arrow
+        if liftsSelection(at: point) { return .moveFrame }
+        // Four arrows for what a drag will move; the open hand belongs to Space, which moves the view.
+        guard let hit = layer(at: point) else { return .arrow }
+        return hit.isLocked ? .arrow : .moveFrame
     }
 
     override func drawOverlay(in context: CGContext, canvas: CanvasView) {
@@ -104,6 +123,17 @@ final class CropTool: EditorTool {
     /// The frame as the user left it. Straightening shrinks the frame on screen from this one, so that
     /// easing the slider back gives the room back.
     private var chosen = CGRect.zero
+    /// True once the user has set the frame, the ratio or the angle since the tool came up or last cropped.
+    /// A frame that only follows a ratio remembered from earlier is nothing to apply or ask about.
+    private var isTouched = false
+    /// The frames the user left behind, for ⌘Z before the crop is applied. The frame is not part of the
+    /// document, so the document's history knows nothing of it.
+    private var undoFrames: [CGRect] = []
+    private var redoFrames: [CGRect] = []
+    /// The frame when the mouse went down, to tell whether the drag changed anything.
+    private var frameAtMouseDown: CGRect?
+    /// When the arrow keys last moved the frame: a run of presses is one step of undo.
+    private var lastNudge: TimeInterval = 0
 
     private var ratio: CGFloat? {
         switch model.cropAspect {
@@ -123,16 +153,70 @@ final class CropTool: EditorTool {
         model.straighten = 0
         applyRatio()
         chosen = rect
+        forgetFrames()
     }
 
     override func deactivate() {
         canvas.setPreviewRotation(0, about: .zero)
     }
 
+    /// True when leaving now would throw away a crop the user set up but did not apply.
+    var isPending: Bool {
+        isTouched && (rect != document.bounds || model.straighten != 0)
+    }
+
+    /// The size the picture would have after the crop, for messages.
+    var pendingSize: CGSize { CGSize(width: rect.width.rounded(), height: rect.height.rounded()) }
+
+    var canUndoFrame: Bool { !undoFrames.isEmpty }
+    var canRedoFrame: Bool { !redoFrames.isEmpty }
+
+    func undoFrame() -> Bool {
+        guard let previous = undoFrames.popLast() else { return false }
+        redoFrames.append(chosen)
+        restore(previous)
+        return true
+    }
+
+    func redoFrame() -> Bool {
+        guard let next = redoFrames.popLast() else { return false }
+        undoFrames.append(chosen)
+        restore(next)
+        return true
+    }
+
+    private func restore(_ frame: CGRect) {
+        rect = frame
+        applyRatio()
+        chosen = rect
+        isTouched = true
+        fitToTurnedPicture()
+        updatePreview()
+        redrawOverlay()
+    }
+
+    /// Keeps `previous` for ⌘Z when the frame the user chose has moved away from it.
+    private func remember(_ previous: CGRect) {
+        guard previous != chosen else { return }
+        undoFrames.append(previous)
+        redoFrames.removeAll()
+        isTouched = true
+    }
+
+    private func forgetFrames() {
+        undoFrames.removeAll()
+        redoFrames.removeAll()
+        isTouched = false
+    }
+
     override func settingsDidChange() {
+        let previous = chosen
         rect = chosen
         applyRatio()
         chosen = rect
+        remember(previous)
+        // A ratio or an angle picked by hand is something to apply too, even before the frame moves.
+        isTouched = true
         fitToTurnedPicture()
         updatePreview()
         redrawOverlay()
@@ -143,6 +227,24 @@ final class CropTool: EditorTool {
         rect = document.bounds
         applyRatio()
         chosen = rect
+        forgetFrames()
+        fitToTurnedPicture()
+        updatePreview()
+        redrawOverlay()
+    }
+
+    /// Escape or the Reset button: the frame goes back around the whole picture, and ⌘Z brings it back.
+    func startOver() {
+        let previous = chosen
+        // Zeroing the angle reports a settings change; that must start from the whole picture already.
+        rect = document.bounds
+        chosen = rect
+        model.straighten = 0
+        applyRatio()
+        chosen = rect
+        remember(previous)
+        // Back around the whole picture there is nothing left to apply.
+        isTouched = false
         fitToTurnedPicture()
         updatePreview()
         redrawOverlay()
@@ -178,6 +280,7 @@ final class CropTool: EditorTool {
             apply()
             return
         }
+        frameAtMouseDown = chosen
         if let handle = handle(at: point) {
             drag = .handle(handle, start: point, original: rect)
             nudged = handle
@@ -218,19 +321,23 @@ final class CropTool: EditorTool {
     override func mouseUp(at point: CGPoint, event: NSEvent) {
         guard drag != nil else { return }
         drag = nil
-        if rect.width < 2 || rect.height < 2 { reset() }
+        // A click or a twitch is no frame; the one from before stays.
+        if rect.width < 2 || rect.height < 2 { rect = frameAtMouseDown ?? document.bounds }
         rect = CGRect(
             x: rect.minX.rounded(), y: rect.minY.rounded(), width: max(rect.width.rounded(), 1),
             height: max(rect.height.rounded(), 1)
         )
         // A frame set by hand is taken as it is, even tilted past the picture.
         chosen = rect
+        if let previous = frameAtMouseDown { remember(previous) }
+        frameAtMouseDown = nil
         redrawOverlay()
     }
 
     /// Arrow keys move the edge or corner dragged last by a pixel, ten with Shift; after the frame was moved
     /// or drawn, they move the whole frame. Fine trims at any zoom, such as a one-pixel border or a scroll bar.
-    private func nudge(_ delta: CGPoint) {
+    private func nudge(_ delta: CGPoint, at time: TimeInterval) {
+        let previous = chosen
         if let index = nudged {
             let handle = FrameGeometry.handlePoints(rect)[index]
             rect = FrameGeometry.frame(
@@ -240,6 +347,14 @@ final class CropTool: EditorTool {
             rect = rect.offsetBy(dx: delta.x, dy: delta.y)
         }
         chosen = rect
+        // Presses in quick succession are one trim, and one ⌘Z takes all of it back.
+        if time - lastNudge > 1 || undoFrames.isEmpty {
+            remember(previous)
+        } else {
+            redoFrames.removeAll()
+            isTouched = true
+        }
+        lastNudge = time
         updatePreview()
         redrawOverlay()
     }
@@ -261,6 +376,8 @@ final class CropTool: EditorTool {
         model.straighten = 0
         rect = document.bounds
         chosen = rect
+        // From here on the crop is a step of the document's history.
+        forgetFrames()
         canvas.fit()
     }
 
@@ -270,8 +387,7 @@ final class CropTool: EditorTool {
             apply()
             return true
         case 53:
-            model.straighten = 0
-            reset()
+            startOver()
             return true
         case 123, 124, 125, 126:
             let step: CGFloat = event.modifierFlags.contains(.shift) ? 10 : 1
@@ -281,7 +397,7 @@ final class CropTool: EditorTool {
             case 125: CGPoint(x: 0, y: step)
             default: CGPoint(x: 0, y: -step)
             }
-            nudge(delta)
+            nudge(delta, at: event.timestamp)
             return true
         default:
             return false
@@ -289,8 +405,12 @@ final class CropTool: EditorTool {
     }
 
     override func cursor(at point: CGPoint) -> NSCursor {
-        if handle(at: point) != nil { return .pointingHand }
-        return rect.contains(point) ? .openHand : .crosshair
+        if let handle = handle(at: point) {
+            let positions: [NSCursor.FrameResizePosition] = [.topLeft, .topRight, .bottomRight, .bottomLeft, .top, .right, .bottom, .left]
+            return NSCursor.frameResize(position: positions[handle], directions: .all)
+        }
+        // Not the open hand: that is what Space shows, and it moves the picture, not the frame.
+        return rect.contains(point) ? .moveFrame : .crosshair
     }
 
     override func drawOverlay(in context: CGContext, canvas: CanvasView) {
@@ -524,7 +644,7 @@ final class PaintTool: EditorTool {
     }
 
     override func keyDown(_ event: NSEvent) -> Bool {
-        switch event.charactersIgnoringModifiers {
+        switch event.latinCharactersIgnoringModifiers {
         case "[":
             model.brushSize = max(1, (model.brushSize * 0.85).rounded(.down))
         case "]":
@@ -650,10 +770,11 @@ final class TextTool: EditorTool {
     override var holdsKeyboard: Bool { session != nil }
 
     /// Starts typing into a text layer, with the caret at a point or with everything selected.
-    func beginEditing(_ id: LayerID, at point: CGPoint? = nil) {
+    /// `isNew` is for a layer this click has just added: left as it came, with nothing typed, it goes again.
+    func beginEditing(_ id: LayerID, at point: CGPoint? = nil, isNew: Bool = false) {
         endEditing()
         document.setActiveLayer(id)
-        session = TextEditingSession(editor: editor, layerID: id, caretAt: point)
+        session = TextEditingSession(editor: editor, layerID: id, caretAt: point, isNew: isNew)
         session?.onEnd = { [weak self] in
             self?.session = nil
             self?.redrawOverlay()
@@ -749,7 +870,7 @@ final class TextTool: EditorTool {
         layer.transform = CGAffineTransform(translationX: point.x - size.width / 2, y: point.y - size.height / 2)
         document.addLayer(layer, name: "Add Text")
         // The placeholder is selected, so the first key replaces it.
-        beginEditing(layer.id)
+        beginEditing(layer.id, isNew: true)
     }
 
     /// A bubble in the primary color with its tail on `tip`. A plain click puts the bubble up and to the right.
@@ -774,7 +895,7 @@ final class TextTool: EditorTool {
         text.tail = tip - origin
         layer.content = .text(text)
         document.addLayer(layer, name: "Add Speech Bubble")
-        beginEditing(layer.id)
+        beginEditing(layer.id, isNew: true)
     }
 
     override func cursor(at point: CGPoint) -> NSCursor {
@@ -1010,4 +1131,38 @@ final class RegionTool: EditorTool {
     override func keyDown(_ event: NSEvent) -> Bool {
         editor.nudgeActiveLayer(with: event)
     }
+}
+
+// MARK: - Cursors
+
+extension NSCursor {
+    /// Four arrows: drags a frame about. The system has no such cursor, and the open hand it would otherwise
+    /// take is what Space shows for moving the picture.
+    @MainActor static let moveFrame: NSCursor = {
+        let side: CGFloat = 22
+        let configuration = NSImage.SymbolConfiguration(pointSize: 15, weight: .bold)
+        guard let symbol = NSImage(
+            systemSymbolName: "arrow.up.and.down.and.arrow.left.and.right", accessibilityDescription: nil
+        )?.withSymbolConfiguration(configuration) else { return .openHand }
+        let image = NSImage(size: NSSize(width: side, height: side), flipped: false) { bounds in
+            let size = symbol.size
+            let rect = NSRect(
+                x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2, width: size.width, height: size.height
+            )
+            // Dark arrows with a light rim, so the cursor reads on any picture, as the system's own do.
+            let shadow = NSShadow()
+            shadow.shadowColor = .white
+            shadow.shadowBlurRadius = 2
+            shadow.set()
+            let tinted = NSImage(size: size, flipped: false) { box in
+                symbol.draw(in: box)
+                NSColor.black.set()
+                box.fill(using: .sourceAtop)
+                return true
+            }
+            for _ in 0..<3 { tinted.draw(in: rect) }
+            return true
+        }
+        return NSCursor(image: image, hotSpot: NSPoint(x: side / 2, y: side / 2))
+    }()
 }

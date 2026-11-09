@@ -39,9 +39,26 @@ public final class History {
     }
 
     public func markSaved() {
-        savedAtStart = position == 0
-        savedEntry = position > 0 ? entries[position - 1].id : nil
+        markSaved(saveMarker())
+    }
+
+    /// The state as it is now, for a save that takes a while: the picture is taken now and written later.
+    public struct SaveMarker: Sendable {
+        let entry: UUID?
+        let atStart: Bool
+    }
+
+    /// Notes the current state for `markSaved(_:)`. Ends the current run of merges, so that a change made while
+    /// the file is being written is a step of its own and not taken for part of what was saved.
+    public func saveMarker() -> SaveMarker {
         isSealed = true
+        return SaveMarker(entry: position > 0 ? entries[position - 1].id : nil, atStart: position == 0)
+    }
+
+    /// Records that the state noted by `marker` is what the file now holds. Changes made since stay unsaved.
+    public func markSaved(_ marker: SaveMarker) {
+        savedAtStart = marker.atStart
+        savedEntry = marker.entry
         onChange?()
     }
 

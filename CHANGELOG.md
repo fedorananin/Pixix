@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.4.2
+
+- **The mouse wheel scrolls in the editor.** It used to zoom there as in the viewer, which left no way to move
+  a zoomed picture with a mouse. Now the wheel scrolls (`⇧` sideways), `⌘` or `⌥` with the wheel zooms, and
+  the middle button drags the picture, as Space does.
+- **`⌘Z` takes back the crop frame.** Moving or resizing the frame, a run of arrow presses and Escape are each
+  a step that `⌘Z` undoes before the document's own history.
+- **An unapplied crop is no longer lost.** Done, closing the window and quitting ask first and offer Crop and
+  Save; switching tools, rotating, flipping, resizing and saving apply the frame, and `⌘Z` undoes that.
+- Inside the crop frame the cursor is four arrows, not the hand that means moving the picture; the handles
+  show resize cursors. The Move tool shows the same four arrows over what a drag will move.
+- **Saving is safer.** A change made while ⌘S is still writing a slow format stays unsaved. Save As with a
+  smaller size is a copy: the full-size edit stays open and unsaved instead of being taken for saved. A pasted
+  picture or a screenshot asks where to go instead of landing in Pictures. Cancelling the location panel goes
+  back to the dialog with its settings, and Save As from the close prompt finishes closing once it is saved.
+- **Quitting** with unsaved edits asks window by window and closes nothing until every answer is in.
+- **Rotating a file can be undone** to the very bytes it had, also in formats that have to be encoded again.
+  Copy to Folder can be undone, and every file action can be redone.
+- **Screenshots:** `⌘Z` also takes back moving or resizing the selection, in the order things were done.
+  With markup on the screen, `Esc` needs a second press, and first closes an open popup.
+- `⌘Z` in a text field of the panels undoes the typing there, not the picture. Typing on the canvas is undone
+  a word at a time. A click with the text tool that types nothing leaves no "Text" layer behind.
+- A plain click inside a selection with the Move tool no longer cuts the pixels onto a layer of their own;
+  only a drag does, and only inside the selected shape.
+- Numbers typed into Resize, Canvas Size and Export count even when the button is clicked without pressing
+  Return first.
+- `⌘C` in the editor with nothing selected copies the whole picture, text and arrows included.
+- Single-key shortcuts (tools, `F`, `[`, `]`) work on a Russian or any other non-Latin layout.
+- A screenshot that cannot be saved is put on the clipboard instead of being lost.
+- A window cannot trash, rename, move or turn a file another window is editing.
+
 ## 0.4.1
 
 - **Crop trims by the pixel.** An edge of the crop frame no longer sticks to the border of the picture: it can be

@@ -30,6 +30,8 @@ final class ExportModel {
 
     let title: String
     let confirmTitle: String
+    /// True when there is no original to save next to, such as a pasted picture: the file always needs a place.
+    var needsLocation = false
     let source: ExportSource
     let originalBytes: Int?
     let sourceHasAlpha: Bool

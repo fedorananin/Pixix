@@ -37,6 +37,8 @@ final class EditorController: CanvasToolHandler {
     /// Small pictures of the layers for the panel, redrawn a moment after the document settles.
     private(set) var thumbnails: [LayerID: CGImage] = [:]
     private var thumbnailWork: DispatchWorkItem?
+    /// Said once a session: the wheel scrolls here, and ⌘ makes it zoom.
+    var hasShownWheelHint = false
 
     private var tool: EditorTool!
     private var buffers: [PixelBuffer] = []
@@ -64,13 +66,29 @@ final class EditorController: CanvasToolHandler {
 
     var isDirty: Bool { startsUnsaved || document.history.isDirty }
 
-    func markSaved(url: URL) {
+    /// A crop frame set up and not applied. It is not part of the document, but leaving would lose it all the same.
+    var hasPendingCrop: Bool { (tool as? CropTool)?.isPending == true }
+
+    /// Something would be lost by leaving: edits not saved, or a crop not applied.
+    var hasUnsavedWork: Bool { isDirty || hasPendingCrop }
+
+    /// Applies what is on screen and not yet in the document, so that what gets saved is what the user sees.
+    func commitPendingEdits() {
+        if hasPendingCrop { applyCrop() }
+    }
+
+    /// `marker` is the state the file holds, noted when the picture for it was taken; without one, the state now.
+    func markSaved(url: URL, marker: History.SaveMarker? = nil) {
         fileURL = url
         startsUnsaved = false
         // From here on the file holds this session's own work.
         fileIsUntouched = false
-        document.history.markSaved()
-        host.window?.isDocumentEdited = false
+        if let marker {
+            document.history.markSaved(marker)
+        } else {
+            document.history.markSaved()
+        }
+        host.window?.isDocumentEdited = isDirty
     }
 
     func flattenedImage() -> CGImage {
@@ -234,6 +252,13 @@ final class EditorController: CanvasToolHandler {
         // Tools of one family share an object, so switching brush to eraser keeps the clone source and such.
         let sameFamily = type(of: makeTool(old)) == type(of: makeTool(model.tool))
         if !sameFamily {
+            // Leaving the crop tool applies the frame, as other editors do, instead of silently dropping it.
+            // It is one step of history, so ⌘Z brings the rest of the picture back.
+            if let crop = tool as? CropTool, crop.isPending {
+                let size = crop.pendingSize
+                crop.apply()
+                host.showToast("Cropped to \(Int(size.width)) × \(Int(size.height)) · ⌘Z brings back the rest")
+            }
             tool.deactivate()
             tool = makeTool(model.tool)
             tool.activate()
@@ -251,9 +276,25 @@ final class EditorController: CanvasToolHandler {
     }
 
     func resetCrop() {
-        model.straighten = 0
-        (tool as? CropTool)?.reset()
+        (tool as? CropTool)?.startOver()
     }
+
+    // MARK: Undo
+
+    /// ⌘Z takes back a move of the crop frame first: that is what the user did last, though it is not
+    /// in the document yet. Then the document's own history.
+    func undo() {
+        if (tool as? CropTool)?.undoFrame() == true { return }
+        document.undo()
+    }
+
+    func redo() {
+        if (tool as? CropTool)?.redoFrame() == true { return }
+        document.redo()
+    }
+
+    private var canUndoFrame: Bool { (tool as? CropTool)?.canUndoFrame == true }
+    private var canRedoFrame: Bool { (tool as? CropTool)?.canRedoFrame == true }
 
     /// Offers a key to the tool alone, for a host with its own idea of what the other keys do.
     func toolKeyDown(_ event: NSEvent) -> Bool { tool.keyDown(event) }
@@ -294,7 +335,7 @@ final class EditorController: CanvasToolHandler {
         default:
             break
         }
-        guard let characters = event.charactersIgnoringModifiers?.lowercased(), let key = characters.first else { return false }
+        guard let characters = event.latinCharactersIgnoringModifiers?.lowercased(), let key = characters.first else { return false }
         if key == "x" {
             model.swapColors()
             return true
@@ -339,12 +380,17 @@ final class EditorController: CanvasToolHandler {
 
     // MARK: Canvas-level operations
 
+    // A crop frame on screen is applied before the picture turns or changes size: the frame names a part of the
+    // picture as it is now, and would otherwise be thrown away or land on a different part.
+
     func rotateCanvas(quarterTurns: Int) {
+        commitPendingEdits()
         document.rotate(quarterTurns: quarterTurns)
         canvas.fit()
     }
 
     func flipCanvas(horizontal: Bool) {
+        commitPendingEdits()
         document.flip(horizontal: horizontal)
     }
 
@@ -454,6 +500,7 @@ final class EditorController: CanvasToolHandler {
     }
 
     func beginResize() {
+        commitPendingEdits()
         model.resizeWidth = Int(document.size.width)
         model.resizeHeight = Int(document.size.height)
         model.resizeKeepsAspect = true
@@ -461,6 +508,7 @@ final class EditorController: CanvasToolHandler {
     }
 
     func beginCanvasSize() {
+        commitPendingEdits()
         model.canvasWidth = Int(document.size.width)
         model.canvasHeight = Int(document.size.height)
         model.canvasAnchor = CGPoint(x: 0.5, y: 0.5)
@@ -571,9 +619,17 @@ final class EditorController: CanvasToolHandler {
         let layer = document.activeLayer
         switch action {
         case #selector(ViewerWindowController.undoEdit(_:)):
+            if canUndoFrame {
+                menuItem?.title = "Undo Crop Frame"
+                return true
+            }
             menuItem?.title = document.history.undoName.map { "Undo \($0)" } ?? "Undo"
             return document.history.canUndo
         case #selector(ViewerWindowController.redoEdit(_:)):
+            if canRedoFrame {
+                menuItem?.title = "Redo Crop Frame"
+                return true
+            }
             menuItem?.title = document.history.redoName.map { "Redo \($0)" } ?? "Redo"
             return document.history.canRedo
         case #selector(ViewerWindowController.deselect(_:)), #selector(ViewerWindowController.cropToSelection(_:)):

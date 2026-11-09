@@ -28,6 +28,10 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate, Canvas
     private var bottomHeight: NSLayoutConstraint!
 
     var editor: EditorController?
+    /// Undo for file actions in the viewer, and for typing into the fields of the panels while editing. Kept
+    /// apart, so that ⌘Z in a field never brings back a file from the Trash, and file actions never mix with typing.
+    private let fileUndoManager = UndoManager()
+    let fieldUndoManager = UndoManager()
     private var filmstrip: FilmstripView?
     private var slideshowTimer: Timer?
     private var infoPopover: NSPopover?
@@ -359,6 +363,13 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate, Canvas
         scheduleChromeHide()
     }
 
+    /// The wheel scrolls in the editor, unlike in the viewer; a wheel turned at a picture that fits says how to zoom.
+    func canvasWheelHadNothingToScroll(_ canvas: CanvasView) {
+        guard let editor, !editor.hasShownWheelHint else { return }
+        editor.hasShownWheelHint = true
+        showToast("The wheel scrolls while editing · hold ⌘ to zoom")
+    }
+
     func canvasViewportDidChange(_ canvas: CanvasView) {
         zoomBar.setZoom(percent: canvas.zoomPercent)
         editor?.viewportDidChange()
@@ -530,7 +541,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate, Canvas
         case 49:
             if player != nil { togglePlayback(nil) } else { nextImage(nil) }
         default:
-            switch event.charactersIgnoringModifiers {
+            switch event.latinCharactersIgnoringModifiers {
             case "f": window?.toggleFullScreen(nil)
             case "+", "=": zoomIn(nil)
             case "-": zoomOut(nil)
@@ -554,8 +565,20 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate, Canvas
         return true
     }
 
+    /// The picture on show is open in the editor of another window, so the file must stay as and where it is.
+    var currentFileIsEditedElsewhere: Bool {
+        guard let url = currentURL else { return false }
+        return (NSApp.delegate as? AppDelegate)?.isEditing(url, except: self) == true
+    }
+
     @objc func moveToTrash(_ sender: Any?) {
         guard !isEditing, let url = currentURL else { return }
+        guard !currentFileIsEditedElsewhere else { return refuseWhileEditedElsewhere() }
+        trashFile(url)
+    }
+
+    /// Moves a file to the Trash; undo puts it back, and redo trashes it again.
+    func trashFile(_ url: URL) {
         do {
             var trashed: NSURL?
             try FileManager.default.trashItem(at: url, resultingItemURL: &trashed)
@@ -566,6 +589,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate, Canvas
                     do {
                         try FileManager.default.moveItem(at: trashed, to: url)
                         controller.browser?.insert(url, select: true)
+                        controller.window?.undoManager?.registerUndo(withTarget: controller) { $0.trashFile(url) }
                     } catch {
                         controller.present(error)
                     }
@@ -586,19 +610,46 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate, Canvas
             return
         }
         guard let url = currentURL, displayed?.url == url else { return }
+        guard !currentFileIsEditedElsewhere else { return refuseWhileEditedElsewhere() }
+        rotateFile(url, clockwise: clockwise)
+    }
+
+    /// Turns the file itself. Most formats only get a new orientation tag, but some have to be encoded again, so
+    /// the file as it was is kept for undo: undo writes those very bytes back, and nothing is lost by turning.
+    private func rotateFile(_ url: URL, clockwise: Bool) {
         loadTask?.cancel()
         Task { [weak self] in
             do {
-                try await Task.detached(priority: .userInitiated) {
+                let original = try await Task.detached(priority: .userInitiated) { () -> Data in
+                    let original = try Data(contentsOf: url)
                     try FileRotation.rotate(url: url, clockwise: clockwise)
+                    return original
                 }.value
                 ImageLoader.shared.invalidate(url)
-                guard let self, self.currentURL == url else { return }
-                self.showCurrent()
+                guard let self else { return }
+                self.window?.undoManager?.registerUndo(withTarget: self) { controller in
+                    do {
+                        try FileWriter.write(original, to: url)
+                        ImageLoader.shared.invalidate(url)
+                        controller.window?.undoManager?.registerUndo(withTarget: controller) {
+                            $0.rotateFile(url, clockwise: clockwise)
+                        }
+                        if controller.currentURL == url { controller.showCurrent() }
+                    } catch {
+                        controller.present(error)
+                    }
+                }
+                self.window?.undoManager?.setActionName(clockwise ? "Rotate Right" : "Rotate Left")
+                if self.currentURL == url { self.showCurrent() }
             } catch {
                 self?.present(error)
             }
         }
+    }
+
+    func refuseWhileEditedElsewhere() {
+        NSSound.beep()
+        showToast("This picture is being edited in another window")
     }
 
     @objc func revealInFinder(_ sender: Any?) {
@@ -617,7 +668,9 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate, Canvas
 
     @objc func copy(_ sender: Any?) {
         if let editor {
-            editor.copySelection(merged: false)
+            // With nothing selected the whole picture is meant, text and arrows included, as in the viewer.
+            // A selection copies the active layer's part of it, as in Paint.NET; Copy Merged takes all layers.
+            editor.copySelection(merged: editor.document.selection == nil)
             return
         }
         guard let displayed else { return }
@@ -678,8 +731,12 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate, Canvas
 
     // MARK: Window
 
+    func windowWillReturnUndoManager(_ window: NSWindow) -> UndoManager? {
+        isEditing ? fieldUndoManager : fileUndoManager
+    }
+
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        guard let editor, editor.isDirty else { return true }
+        guard let editor, editor.hasUnsavedWork else { return true }
         confirmDiscardingEdits { [weak self] proceed in
             if proceed { self?.window?.close() }
         }
@@ -717,6 +774,14 @@ extension ViewerWindowController: NSMenuItemValidation, NSToolbarItemValidation 
         guard let action else { return true }
         let hasImage = displayed != nil || isEditing
         let hasFile = currentURL != nil
+        if isEditing, action == #selector(undoEdit(_:)), let fields = typingFieldUndo, fields.canUndo {
+            menuItem?.title = fields.undoMenuItemTitle
+            return true
+        }
+        if isEditing, action == #selector(redoEdit(_:)), let fields = typingFieldUndo, fields.canRedo {
+            menuItem?.title = fields.redoMenuItemTitle
+            return true
+        }
         if let editor, let verdict = editor.validate(action: action, menuItem: menuItem) { return verdict }
         switch action {
         case #selector(nextImage(_:)), #selector(previousImage(_:)), #selector(firstImage(_:)), #selector(lastImage(_:)):
@@ -730,8 +795,9 @@ extension ViewerWindowController: NSMenuItemValidation, NSToolbarItemValidation 
         case #selector(toggleLiveText(_:)):
             menuItem?.state = Settings.shared.liveText ? .on : .off
             return !isEditing
-        case #selector(moveToTrash(_:)), #selector(setAsWallpaper(_:)), #selector(renameFile(_:)),
-             #selector(duplicateFile(_:)), #selector(copyToFolder(_:)), #selector(moveToFolder(_:)):
+        case #selector(moveToTrash(_:)), #selector(renameFile(_:)), #selector(moveToFolder(_:)):
+            return hasFile && !isEditing && !currentFileIsEditedElsewhere
+        case #selector(setAsWallpaper(_:)), #selector(duplicateFile(_:)), #selector(copyToFolder(_:)):
             return hasFile && !isEditing
         case #selector(openInNewWindow(_:)):
             return hasFile
@@ -739,7 +805,7 @@ extension ViewerWindowController: NSMenuItemValidation, NSToolbarItemValidation 
             return hasFile
         case #selector(rotateLeft(_:)), #selector(rotateRight(_:)):
             if isEditing { return true }
-            return hasFile && displayed?.loaded.info.isAnimated == false
+            return hasFile && displayed?.loaded.info.isAnimated == false && !currentFileIsEditedElsewhere
         case #selector(undoEdit(_:)) where !isEditing:
             menuItem?.title = window?.undoManager?.undoMenuItemTitle ?? "Undo"
             return window?.undoManager?.canUndo ?? false
@@ -752,7 +818,7 @@ extension ViewerWindowController: NSMenuItemValidation, NSToolbarItemValidation 
             menuItem?.title = isEditing ? "Finish Editing" : "Edit Image"
             return hasImage
         case #selector(saveDocument(_:)):
-            return editor?.isDirty ?? false
+            return editor?.hasUnsavedWork ?? false
         case #selector(saveDocumentAs(_:)), #selector(exportImage(_:)), #selector(printImage(_:)), #selector(copy(_:)):
             return hasImage
         case #selector(exportAgain(_:)):

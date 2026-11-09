@@ -17,6 +17,11 @@ final class TextEditingSession: NSObject, NSTextViewDelegate {
     /// Where a drag that selects text started.
     private var dragAnchor = 0
     private var hasEnded = false
+    /// For a layer just added to type into: the length of the history then. Ending with nothing recorded since
+    /// means a stray click, and the placeholder goes away instead of staying as a layer saying "Text".
+    private let newLayerPosition: Int?
+    /// When the text last changed, to break the typing into steps of undo.
+    private var lastTyped: TimeInterval = 0
     /// Called once, when typing is over for whatever reason.
     var onEnd: (() -> Void)?
 
@@ -25,10 +30,11 @@ final class TextEditingSession: NSObject, NSTextViewDelegate {
 
     /// Starts typing into a text layer. `caretAt` is a point on the picture; without it all the text is selected,
     /// so that typing replaces a placeholder.
-    init?(editor: EditorController, layerID: LayerID, caretAt point: CGPoint? = nil) {
+    init?(editor: EditorController, layerID: LayerID, caretAt point: CGPoint? = nil, isNew: Bool = false) {
         guard let layer = editor.document.layer(layerID), let text = layer.text, !layer.isLocked else { return nil }
         self.editor = editor
         self.layerID = layerID
+        newLayerPosition = isNew ? editor.document.history.position : nil
         super.init()
 
         proxy.isRichText = false
@@ -70,7 +76,11 @@ final class TextEditingSession: NSObject, NSTextViewDelegate {
         if proxy.window?.firstResponder === proxy { canvas.window?.makeFirstResponder(canvas) }
         proxy.removeFromSuperview()
         document.endInteraction()
-        if let text = document.layer(layerID)?.text,
+        if let newLayerPosition, document.history.position == newLayerPosition,
+           document.history.undoName != nil, document.layer(layerID) != nil {
+            // Added by a click and never typed into: take the adding back, so no step of history is left either.
+            document.undo()
+        } else if let text = document.layer(layerID)?.text,
            text.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, document.layers.count > 1 {
             document.removeLayer(layerID)
         }
@@ -99,6 +109,12 @@ final class TextEditingSession: NSObject, NSTextViewDelegate {
             case .right: anchor = CGPoint(x: 1, y: 0)
             }
         }
+        // Typing is a step of undo per word, or per burst after a pause, not one step for everything typed.
+        let now = ProcessInfo.processInfo.systemUptime
+        let wordEnded = layer.text?.string.last.map { $0.isWhitespace || $0.isNewline } == true
+            && proxy.string.last.map { !$0.isWhitespace } == true
+        if wordEnded || now - lastTyped > 1.5 { document.history.seal() }
+        lastTyped = now
         document.updateLayer(layerID, name: "Edit Text", key: "typing") { $0.setText(text, keeping: anchor) }
         restartBlink()
     }
