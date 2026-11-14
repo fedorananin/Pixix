@@ -39,7 +39,7 @@ extension ViewerWindowController {
             }.value
             return PreparedSource(source: .frames(frames, properties: properties.value), originalBytes: bytes, baseURL: url)
         }
-        let full = try await ImageLoader.shared.load(url, maxPixel: nil)
+        let full = try await fullImage(of: url)
         let properties = (try? ImageSource(url: url))?.properties()
         return PreparedSource(source: .image(full.image, properties: properties), originalBytes: bytes, baseURL: url)
     }

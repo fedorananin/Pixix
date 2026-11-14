@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import ImageIO
 import Testing
 @testable import PixixCodec
 
@@ -222,4 +223,80 @@ func rotateFileSwapsDimensions(format: ImageFormat) throws {
 @Test func coordinateLinksToMaps() {
     let place = ImageDetails.Coordinate(latitude: -33.8568, longitude: 151.2153)
     #expect(place.mapsURL?.absoluteString == "https://maps.apple.com/?ll=-33.856800,151.215300&q=-33.856800,151.215300")
+}
+
+/// Pixels of an image as RGBA bytes in sRGB, whatever its own layout.
+private func rgbaBytes(_ image: CGImage) -> [UInt8] {
+    var bytes = [UInt8](repeating: 0, count: image.width * image.height * 4)
+    let context = CGContext(
+        data: &bytes, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: image.width * 4,
+        space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    )!
+    context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+    return bytes
+}
+
+@Test(arguments: 1...8, [nil, 10])
+func decodeTurnsLikeImageIO(orientation: Int, maxPixelSize: Int?) throws {
+    // Every pixel different, so any turn or mirror image shows. A preview is half the size.
+    let width = 20, height = 12
+    var pixels = [UInt8]()
+    for y in 0..<height {
+        for x in 0..<width { pixels += [UInt8(x * 12), UInt8(y * 20), UInt8(20 + x * 5 + y * 7), 255] }
+    }
+    let provider = CGDataProvider(data: Data(pixels) as CFData)!
+    let image = CGImage(
+        width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: width * 4,
+        space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
+        provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent
+    )!
+    let url = temporaryDirectory().appendingPathComponent("turned.tiff")
+    let destination = CGImageDestinationCreateWithURL(url as CFURL, "public.tiff" as CFString, 1, nil)!
+    CGImageDestinationAddImage(destination, image, [kCGImagePropertyOrientation: orientation] as CFDictionary)
+    #expect(CGImageDestinationFinalize(destination))
+
+    let decoded = try ImageSource(url: url).image(maxPixelSize: maxPixelSize)
+    // What ImageIO itself makes of the same file.
+    let source = CGImageSourceCreateWithURL(url as CFURL, nil)!
+    let reference = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+        kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true,
+        kCGImageSourceThumbnailMaxPixelSize: maxPixelSize ?? max(width, height),
+    ] as CFDictionary)!
+    #expect(decoded.width == reference.width)
+    #expect(decoded.height == reference.height)
+    #expect(rgbaBytes(decoded) == rgbaBytes(reference))
+    // The turn itself, in case the decode above fell back to the thumbnail call.
+    guard maxPixelSize == nil else { return }
+    let turned = try #require(Resampler.oriented(CGImageSourceCreateImageAtIndex(source, 0, nil)!, orientation: orientation))
+    #expect(rgbaBytes(turned.image) == rgbaBytes(reference))
+    // A turned picture is in a surface, for the screen; an upright one is ImageIO's own.
+    #expect((turned.surface != nil) == (orientation != 1))
+}
+
+@Test(arguments: ["16-bit", "cmyk", "gray"])
+func fullDecodeOfUnusualLayoutsMatchesThumbnail(kind: String) throws {
+    let width = 8, height = 6
+    let (space, bits, info, type): (CGColorSpace, Int, UInt32, String) = switch kind {
+    case "16-bit": (CGColorSpace(name: CGColorSpace.sRGB)!, 16, CGImageAlphaInfo.noneSkipLast.rawValue | CGBitmapInfo.byteOrder16Little.rawValue, "public.png")
+    case "cmyk": (CGColorSpace(name: CGColorSpace.genericCMYK)!, 8, CGImageAlphaInfo.none.rawValue, "public.jpeg")
+    default: (CGColorSpace(name: CGColorSpace.linearGray)!, 8, CGImageAlphaInfo.none.rawValue, "public.png")
+    }
+    let context = try #require(CGContext(
+        data: nil, width: width, height: height, bitsPerComponent: bits, bytesPerRow: 0, space: space, bitmapInfo: info
+    ))
+    context.setFillColor(CGColor(gray: 0.4, alpha: 1))
+    context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+    let url = temporaryDirectory().appendingPathComponent("odd")
+    let destination = try #require(CGImageDestinationCreateWithURL(url as CFURL, type as CFString, 1, nil))
+    CGImageDestinationAddImage(destination, try #require(context.makeImage()), nil)
+    #expect(CGImageDestinationFinalize(destination))
+
+    let decoded = try ImageSource(url: url).image()
+    let source = try #require(CGImageSourceCreateWithURL(url as CFURL, nil))
+    let reference = try #require(CGImageSourceCreateThumbnailAtIndex(source, 0, [
+        kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true,
+        kCGImageSourceThumbnailMaxPixelSize: max(width, height),
+    ] as CFDictionary))
+    #expect(decoded.bitsPerComponent == reference.bitsPerComponent)
+    #expect(decoded.colorSpace?.model == reference.colorSpace?.model)
 }

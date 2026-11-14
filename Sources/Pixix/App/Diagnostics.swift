@@ -30,6 +30,9 @@ extension ViewerWindowController {
                 editor.document.composite(), size: editor.document.size, colorSpace: editor.document.colorSpace
             ))
         }
+        if editor == nil, currentFrameImage == nil, let shown = displayed?.loaded, shown.surface != nil {
+            canvas.setImage(shown.image)
+        }
         if let surface = canvas.selectionLayer.contents as? IOSurface {
             let image = CIImage(ioSurface: surface, options: [.colorSpace: NSNull()])
             canvas.selectionLayer.contents = CIContext().createCGImage(image, from: image.extent)
@@ -43,7 +46,8 @@ extension ViewerWindowController {
 
     /// Scripted scenarios for snapshots. `done` is called when the window is ready to be photographed.
     ///
-    /// In the viewer: `mouse`, `windows`, `files`, `rotate-undo`, `livetext`, `info`, `menu`, and for screenshots `capture`,
+    /// In the viewer: `mouse`, `windows`, `files`, `rotate-undo`, `livetext`, `info`, `menu`, `viewer-closed` (a second
+    /// window leafs through the folder and closes, with the memory printed on the way), and for screenshots `capture`,
     /// `capture-full`, `capture-window`, `capture-edit`, `capture-save`, `capture-text`, `capture-undo`, and for measuring
     /// memory `capture-open` (the overlay alone), `capture-closed` (after it is dismissed) and `capture-repeat`
     /// (eight captures in a row); for the color picker `picker` (the magnifier moved by the pointer and the
@@ -61,6 +65,9 @@ extension ViewerWindowController {
             runWindowsScript()
         case "files":
             runFilesScript()
+        case "viewer-closed":
+            runViewerClosedScript(done: done)
+            return
         case "menu":
             // What a right click offers, with the items that are switched off in brackets.
             let menu = canvas(canvas, menuAt: .zero)
@@ -529,6 +536,44 @@ extension ViewerWindowController {
             self.editor?.model.expandedSections = ["layers", "history"]
             print("editor: \(Int(document.size.width))×\(Int(document.size.height)), layers \(document.layers.map(\.name)), locked \(document.layers.filter(\.isLocked).count), dirty \(self.editor?.isDirty ?? false)")
         }
+    }
+
+    /// Opens a second window on the next picture, leafs through the folder in it a picture at a time, waiting for
+    /// each at full size, and closes it, printing the memory at each stage. What that window decoded must go with
+    /// it: memory that stays up after the close is pictures somebody still holds. This window stays open, as the
+    /// menu bar icon would keep the app running, and stays out of it: a snapshot run holds on to it.
+    private func runViewerClosedScript(done: @escaping @MainActor () -> Void) {
+        guard let app = NSApp.delegate as? AppDelegate, let browser, let next = browser.neighbor(offset: 1, wrap: true) else {
+            return done()
+        }
+        func report(_ label: String) {
+            let memory = LaunchOptions.memoryFootprint()?.now ?? 0
+            print(String(format: "%@: %.0f MB, cache %@", label, memory, ImageLoader.shared.summary))
+        }
+        report("one window, first picture")
+        weak var second = app.openInNewWindow(next)
+        weak var secondBrowser = second?.browser
+        let steps = min(browser.count - 1, 12)
+        func shownInFull() -> Bool {
+            guard let second, let shown = second.displayed else { return false }
+            return shown.loaded.isFull && shown.url == second.currentURL
+        }
+        func step(_ number: Int) {
+            guard number <= steps else { return close() }
+            second?.browser?.move(by: 1, wrap: true)
+            wait(for: shownInFull) { step(number + 1) }
+        }
+        func close() {
+            report("second window, after \(steps) more pictures")
+            second?.window?.close()
+            // Long enough for the window to be gone and for any decode still running to finish.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                report("second window closed")
+                print("closed window let go: controller \(second == nil ? "yes" : "no"), folder \(secondBrowser == nil ? "yes" : "no")")
+                done()
+            }
+        }
+        wait(for: shownInFull) { step(1) }
     }
 
     /// Opens the next picture the way Finder would, and prints which windows there are and where.

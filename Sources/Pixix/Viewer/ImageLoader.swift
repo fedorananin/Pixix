@@ -4,39 +4,55 @@ import PixixCodec
 /// A decoded image together with what is known about its file.
 struct LoadedImage: Sendable {
     var image: CGImage
+    /// Where the pixels of `image` are when they are in an IOSurface, which the canvas shows instead.
+    var surface: IOSurface?
     var info: ImageInfo
     /// False when `image` is a downsampled preview.
     var isFull: Bool
     var modified: Date?
 
-    var cost: Int { image.bytesPerRow * image.height }
+    /// What the picture may take in memory once it has been on screen: its pixels, and as much again for a copy
+    /// Core Animation can make to show them and keep for as long as the image lives. Pictures decoded the way
+    /// `ImageSource` does it now are shown without one, so this errs on the side of keeping fewer.
+    var cost: Int { image.bytesPerRow * image.height * 2 }
 }
 
-/// Decodes images off the main thread and keeps recent results in memory.
+/// Decodes images off the main thread and keeps recent results in memory, for the windows that are open.
+///
+/// The cache is there to make flipping back and forth instant, not to remember a whole folder: a decode takes
+/// a fraction of a second, and a picture that takes more than half the limit is not kept at all. The window
+/// on screen holds its own picture, so nothing it shows depends on the cache. When a window closes, what only it
+/// wanted goes, and with the last window everything goes, because with the menu bar icon the process can wait for
+/// days. When macOS runs short of memory it goes too.
 @MainActor
 final class ImageLoader {
     static let shared = ImageLoader()
 
-    private final class Box {
-        let value: LoadedImage
-        init(_ value: LoadedImage) { self.value = value }
-    }
-
-    private let cache = NSCache<NSString, Box>()
+    private var cache: RecentCache<String, LoadedImage>
     private var tasks: [String: Task<LoadedImage, Error>] = [:]
     /// What each window still needs. A decode goes on for as long as any window wants it.
     private var wanted: [ObjectIdentifier: Set<URL>] = [:]
+    private var pressure: DispatchSourceMemoryPressure?
 
     private init() {
-        let memory = ProcessInfo.processInfo.physicalMemory
-        cache.totalCostLimit = Int(min(memory / 8, 2 << 30))
+        let memory = Int(clamping: ProcessInfo.processInfo.physicalMemory)
+        // A sixteenth of the memory, at most 1 GB: the current picture at full size, the previews of its
+        // neighbors and a few pictures seen just before.
+        cache = RecentCache(costLimit: min(memory / 16, 1 << 30), countLimit: 24)
+        // Decoded pictures are the cheapest memory there is to give back: they can be read again.
+        let source = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .main)
+        source.setEventHandler { [weak self] in
+            MainActor.assumeIsolated { self?.cache.removeAll() }
+        }
+        source.resume()
+        pressure = source
     }
 
     private func key(_ url: URL, full: Bool) -> String {
         url.path(percentEncoded: false) + (full ? "|full" : "|preview")
     }
 
-    private nonisolated static func modificationDate(_ url: URL) -> Date? {
+    nonisolated static func modificationDate(_ url: URL) -> Date? {
         (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
     }
 
@@ -44,9 +60,9 @@ final class ImageLoader {
     func cached(_ url: URL, requireFull: Bool = false) -> LoadedImage? {
         let candidates = requireFull ? [true] : [true, false]
         for full in candidates {
-            guard let hit = cache.object(forKey: key(url, full: full) as NSString)?.value else { continue }
+            guard let hit = cache.value(for: key(url, full: full)) else { continue }
             if hit.modified == Self.modificationDate(url) { return hit }
-            cache.removeObject(forKey: key(url, full: full) as NSString)
+            cache.removeValue(for: key(url, full: full))
         }
         return nil
     }
@@ -63,9 +79,12 @@ final class ImageLoader {
             return try Self.decode(url, maxPixel: maxPixel)
         }
         tasks[taskKey] = task
-        defer { tasks[taskKey] = nil }
+        defer { if tasks[taskKey] == task { tasks[taskKey] = nil } }
         let loaded = try await task.value
-        cache.setObject(Box(loaded), forKey: key(url, full: loaded.isFull) as NSString, cost: loaded.cost)
+        // A decode that was cancelled halfway still finishes, but nobody wants what it made any more.
+        if !task.isCancelled {
+            cache.insert(loaded, for: key(url, full: loaded.isFull), cost: loaded.cost)
+        }
         return loaded
     }
 
@@ -79,30 +98,43 @@ final class ImageLoader {
     /// Says which files a window needs now, and cancels the decodes that no window needs any more.
     func setWanted(_ urls: Set<URL>, by owner: AnyObject) {
         wanted[ObjectIdentifier(owner)] = urls
-        let keep = wanted.values.reduce(into: Set<URL>()) { $0.formUnion($1) }
-        let keepKeys = Set(keep.flatMap { [key($0, full: true), key($0, full: false)] })
-        for (taskKey, task) in tasks where !keepKeys.contains(taskKey) {
-            task.cancel()
-        }
+        cancelUnwanted()
     }
 
-    /// A window that closed wants nothing.
+    /// A window that closed wants nothing. What no other window wants goes with it.
     func forget(_ owner: AnyObject) {
         wanted[ObjectIdentifier(owner)] = nil
+        let keep = cancelUnwanted()
+        cache.removeAll { !keep.contains($0) }
+    }
+
+    /// Cancels every decode no window wants. Returns the keys that are still wanted.
+    @discardableResult
+    private func cancelUnwanted() -> Set<String> {
+        let urls = wanted.values.reduce(into: Set<URL>()) { $0.formUnion($1) }
+        let keep = Set(urls.flatMap { [key($0, full: true), key($0, full: false)] })
+        for (taskKey, task) in tasks where !keep.contains(taskKey) {
+            task.cancel()
+        }
+        return keep
     }
 
     func invalidate(_ url: URL) {
-        cache.removeObject(forKey: key(url, full: true) as NSString)
-        cache.removeObject(forKey: key(url, full: false) as NSString)
+        cache.removeValue(for: key(url, full: true))
+        cache.removeValue(for: key(url, full: false))
     }
 
     /// Carries what is cached for a file over to its new name.
     func move(_ old: URL, to new: URL) {
         for full in [true, false] {
-            guard let box = cache.object(forKey: key(old, full: full) as NSString) else { continue }
-            cache.setObject(box, forKey: key(new, full: full) as NSString, cost: box.value.cost)
-            cache.removeObject(forKey: key(old, full: full) as NSString)
+            guard let loaded = cache.removeValue(for: key(old, full: full)) else { continue }
+            cache.insert(loaded, for: key(new, full: full), cost: loaded.cost)
         }
+    }
+
+    /// What the cache holds, for the diagnostic scenarios.
+    var summary: String {
+        "\(cache.count) picture(s), \(cache.totalCost >> 20) MB"
     }
 
     private nonisolated static func decode(_ url: URL, maxPixel: Int?) throws -> LoadedImage {
@@ -110,9 +142,10 @@ final class ImageLoader {
         let longEdge = Int(max(source.info.pixelSize.width, source.info.pixelSize.height))
         // A preview only pays off when it is clearly smaller than the real thing.
         let full = maxPixel.map { Double(longEdge) <= Double($0) * 1.25 } ?? true
-        let image = try source.image(maxPixelSize: full || source.info.isAnimated ? nil : maxPixel)
+        let decoded = try source.decoded(maxPixelSize: full || source.info.isAnimated ? nil : maxPixel)
         return LoadedImage(
-            image: image, info: source.info, isFull: full || source.info.isAnimated, modified: modificationDate(url)
+            image: decoded.image, surface: decoded.surface, info: source.info, isFull: full || source.info.isAnimated,
+            modified: modificationDate(url)
         )
     }
 }

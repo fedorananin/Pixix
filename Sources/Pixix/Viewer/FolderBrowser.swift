@@ -34,6 +34,8 @@ final class FolderBrowser {
         watcher?.cancel()
         watcher = nil
         rescanTask?.cancel()
+        pendingRescan?.cancel()
+        pendingRescan = nil
     }
 
     func neighbor(offset: Int, wrap: Bool) -> URL? {

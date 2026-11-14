@@ -225,10 +225,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// Shows a file in a window of its own, next to whatever else is open, whatever Settings says.
-    func openInNewWindow(_ url: URL) {
+    @discardableResult
+    func openInNewWindow(_ url: URL) -> ViewerWindowController {
         let controller = makeController()
         controller.open([url])
         present(controller)
+        return controller
     }
 
     @objc func newWindow(_ sender: Any?) {

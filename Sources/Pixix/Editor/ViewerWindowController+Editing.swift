@@ -25,7 +25,7 @@ extension ViewerWindowController {
             guard let self else { return }
             do {
                 // An animation is edited one frame at a time: the one being shown.
-                let full = try await ImageLoader.shared.load(url, maxPixel: nil)
+                let full = try await self.fullImage(of: url)
                 guard self.editor == nil, self.currentURL == url else { return }
                 let isAnimated = full.info.isAnimated
                 let image = isAnimated ? (self.currentFrameImage ?? full.image) : full.image

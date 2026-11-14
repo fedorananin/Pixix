@@ -160,7 +160,8 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate, Canvas
         }
         browser?.stop()
         let browser = FolderBrowser(urls: images)
-        browser.onChange = { [weak self] currentChanged in
+        // The closure is kept by the browser itself, so it must not hold it: the two would keep each other forever.
+        browser.onChange = { [weak self, unowned browser] currentChanged in
             guard let self else { return }
             if currentChanged { self.showCurrent() } else { self.updateTitle() }
             // The folder listing arrives after the first picture; the arrows depend on how many files there are.
@@ -259,7 +260,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate, Canvas
         displayed = (url, loaded)
         currentFrameImage = nil
         canvas.setContentSize(loaded.info.pixelSize, resetView: resetView)
-        canvas.setImage(loaded.image)
+        if let surface = loaded.surface { canvas.setSurface(surface) } else { canvas.setImage(loaded.image) }
         message.isHidden = true
         updateTitle()
         if loaded.info.isAnimated, player == nil, let source = try? ImageSource(url: url) {
@@ -280,6 +281,16 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate, Canvas
             onFirstImage?()
             onFirstImage = nil
         }
+    }
+
+    /// The picture of a file at full size. The one on screen is used when it is that, so that the editor and
+    /// saving never decode again what the window already holds; a large picture is not kept in the cache.
+    func fullImage(of url: URL) async throws -> LoadedImage {
+        if let displayed, displayed.url == url, displayed.loaded.isFull,
+           displayed.loaded.modified == ImageLoader.modificationDate(url) {
+            return displayed.loaded
+        }
+        return try await ImageLoader.shared.load(url, maxPixel: nil)
     }
 
     private func showFailure(url: URL, error: Error) {

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.0
+
+- **Pixix no longer holds on to memory.** Pictures that had been looked at stayed decoded in memory for as long
+  as the process lived, up to several gigabytes, and with the menu bar icon on it can live for days. Now the
+  cache holds a few pictures around the current one, is emptied when the windows that wanted them close, and
+  gives everything back when macOS runs short of memory. Leafing through a dozen 30 MP photos used to leave
+  5.6 GB behind; now it is about 300 MB with one window still open.
+- **Every picture is in memory once.** Core Graphics and Core Animation each kept a copy of every large picture
+  shown, which stayed after the picture was gone. Full-size pictures now come straight from ImageIO, and photos
+  with an EXIF rotation are turned without drawing them, so neither copy is made.
+- **Flipping through large photos no longer stutters.** Putting a full-size picture on screen held the window
+  up for 120–240 ms on a 30 MP photo; it now takes 15–40 ms, and nothing for a rotated one.
+- Editing and saving take the picture the window already shows instead of decoding the file again.
+
 ## 0.4.2
 
 - **The mouse wheel scrolls in the editor.** It used to zoom there as in the viewer, which left no way to move
